@@ -256,7 +256,48 @@ interface Milestone {
             </div>
             <div class="form-actions">
               <button class="btn-save" type="button" (click)="saveSeo()" [disabled]="saving()">@if (saving()) { Saving... } @else if (saveSuccess()) { Saved } @else { Save SEO Foundation }</button>
+              <button class="ai-suggest-btn" type="button" (click)="aiSuggestKeywords()" [disabled]="aiKwLoading()">
+                @if (aiKwLoading()) { ✨ Generating… } @else { ✨ AI Suggest Keywords }
+              </button>
             </div>
+
+            @if (aiKwError()) {
+              <p class="ai-suggest-error" role="alert">{{ aiKwError() }}</p>
+            }
+
+            @if (aiKwResult()) {
+              <div class="ai-kw-panel" role="region" aria-label="AI keyword suggestions">
+                <p class="ai-kw-title">AI Keyword Suggestions</p>
+                <div class="ai-kw-group">
+                  <p class="ai-kw-group-label">Primary</p>
+                  <div class="ai-kw-chips">
+                    @for (kw of aiKwResult()!.primary; track kw) {
+                      <span class="kw-chip">{{ kw }}</span>
+                    }
+                  </div>
+                </div>
+                <div class="ai-kw-group">
+                  <p class="ai-kw-group-label">Secondary</p>
+                  <div class="ai-kw-chips">
+                    @for (kw of aiKwResult()!.secondary; track kw) {
+                      <span class="kw-chip">{{ kw }}</span>
+                    }
+                  </div>
+                </div>
+                <div class="ai-kw-group">
+                  <p class="ai-kw-group-label">Long-tail</p>
+                  <div class="ai-kw-chips">
+                    @for (kw of aiKwResult()!.longTail; track kw) {
+                      <span class="kw-chip">{{ kw }}</span>
+                    }
+                  </div>
+                </div>
+                <div class="ai-kw-actions">
+                  <button class="btn-apply-kw" type="button" (click)="applyKwSuggestions()">Apply to fields</button>
+                  <button class="btn-dismiss-kw" type="button" (click)="aiKwResult.set(null)">Dismiss</button>
+                </div>
+              </div>
+            }
           </section>
         }
 
@@ -861,6 +902,47 @@ interface Milestone {
       background: var(--color-surface-raised); border: 1px solid var(--color-border);
       font-size: 13px; color: var(--color-text-muted);
     }
+
+    .ai-suggest-btn {
+      height: 36px; padding: 0 14px;
+      border: 1px solid var(--color-border); border-radius: var(--radius-md);
+      background: transparent; color: var(--color-text-secondary);
+      font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: all 0.12s;
+    }
+    .ai-suggest-btn:hover:not(:disabled) { border-color: #8B5CF6; color: #7C3AED; background: #F5F3FF; }
+    .ai-suggest-btn:disabled { opacity: 0.6; cursor: default; }
+    .ai-suggest-error { font-size: 12.5px; color: var(--color-destructive); margin: 8px 0 0; }
+
+    .ai-kw-panel {
+      margin-top: 16px; padding: 16px;
+      background: var(--color-surface-raised); border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+    }
+    .ai-kw-title { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--color-text); }
+    .ai-kw-group { margin-bottom: 12px; }
+    .ai-kw-group-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); margin: 0 0 6px; }
+    .ai-kw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .kw-chip {
+      padding: 3px 10px; border-radius: 12px;
+      background: var(--color-surface); border: 1px solid var(--color-border);
+      font-size: 12px; color: var(--color-text-secondary); line-height: 1.6;
+    }
+    .ai-kw-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .btn-apply-kw {
+      padding: 7px 14px; border-radius: var(--radius-md);
+      background: var(--color-accent); color: #fff;
+      border: none; font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: opacity 0.12s;
+    }
+    .btn-apply-kw:hover { opacity: 0.88; }
+    .btn-dismiss-kw {
+      padding: 7px 14px; border-radius: var(--radius-md);
+      background: transparent; color: var(--color-text-secondary);
+      border: 1px solid var(--color-border); font-family: var(--font-sans); font-size: 13px;
+      cursor: pointer; transition: border-color 0.12s;
+    }
+    .btn-dismiss-kw:hover { border-color: var(--color-text-muted); }
   `]
 })
 export class Profiling implements OnInit {
@@ -881,6 +963,9 @@ export class Profiling implements OnInit {
   protected saveSuccess = signal(false);
   protected gateLoading = signal(false);
   protected gateError = signal<string | null>(null);
+  protected aiKwLoading = signal(false);
+  protected aiKwError = signal<string | null>(null);
+  protected aiKwResult = signal<{ primary: string[]; secondary: string[]; longTail: string[] } | null>(null);
 
   protected activeTab = signal<TabId>('brief');
 
@@ -1074,6 +1159,26 @@ export class Profiling implements OnInit {
   protected saveBrief()  { this.briefForm.markAllAsTouched(); if (this.briefForm.valid) this.doSave(); }
   protected saveBrand()  { this.brandForm.markAllAsTouched(); if (this.brandForm.valid) this.doSave(); }
   protected saveSeo()    { this.seoForm.markAllAsTouched();   if (this.seoForm.valid)   this.doSave(); }
+
+  protected aiSuggestKeywords() {
+    this.aiKwError.set(null);
+    this.aiKwResult.set(null);
+    this.aiKwLoading.set(true);
+    this.projectService.aiSuggestProfiling(this.projectId).subscribe({
+      next: (r) => { this.aiKwResult.set(r.keywords); this.aiKwLoading.set(false); },
+      error: (err) => { this.aiKwError.set(err?.error?.error ?? 'AI suggestion failed. Please try again.'); this.aiKwLoading.set(false); },
+    });
+  }
+
+  protected applyKwSuggestions() {
+    const kw = this.aiKwResult();
+    if (!kw) return;
+    this.seoForm.patchValue({
+      primaryKeywords: kw.primary.join(', '),
+      secondaryKeywords: [...kw.secondary, ...kw.longTail].join(', '),
+    });
+    this.aiKwResult.set(null);
+  }
 
   protected completeGate() {
     this.gateLoading.set(true);

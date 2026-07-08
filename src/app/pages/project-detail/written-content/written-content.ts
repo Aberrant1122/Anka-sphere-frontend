@@ -83,7 +83,33 @@ const STATUS_ORDER: PageStatus[] = ['DRAFT', 'IN_REVIEW', 'APPROVED', 'REVISION'
             </div>
             <div class="form-actions">
               <button class="btn-save" type="button" (click)="saveBrief()">Save Brief</button>
+              <button class="ai-topics-btn" type="button" (click)="aiSuggestTopics()" [disabled]="aiTopicsLoading()">
+                @if (aiTopicsLoading()) { ✨ Generating… } @else { ✨ AI Suggest Topics }
+              </button>
             </div>
+
+            @if (aiTopicsError()) {
+              <p class="ai-topics-error" role="alert">{{ aiTopicsError() }}</p>
+            }
+
+            @if (aiTopicsResult()) {
+              <div class="ai-topics-panel" role="region" aria-label="AI content topic suggestions">
+                <p class="ai-topics-title">Suggested Content Topics</p>
+                <p class="ai-topics-hint">Click a topic to add it as a page draft.</p>
+                <ul class="ai-topics-list">
+                  @for (topic of aiTopicsResult()!; track topic.title) {
+                    <li class="ai-topic-item">
+                      <div class="ai-topic-text">
+                        <span class="ai-topic-name">{{ topic.title }}</span>
+                        <span class="ai-topic-angle">{{ topic.angle }}</span>
+                      </div>
+                      <button class="ai-topic-add" type="button" (click)="addTopicAsPage(topic.title)" aria-label="Add {{ topic.title }} as page">+ Add</button>
+                    </li>
+                  }
+                </ul>
+                <button class="btn-dismiss-topics" type="button" (click)="aiTopicsResult.set(null)">Dismiss</button>
+              </div>
+            }
           </section>
         }
 
@@ -699,6 +725,49 @@ const STATUS_ORDER: PageStatus[] = ['DRAFT', 'IN_REVIEW', 'APPROVED', 'REVISION'
     @keyframes spin { to { transform: rotate(360deg); } }
 
     .empty-hint { font-size: 13px; color: var(--color-text-muted); padding: 16px 0; }
+
+    .ai-topics-btn {
+      height: 36px; padding: 0 14px;
+      border: 1px solid var(--color-border); border-radius: var(--radius-md);
+      background: transparent; color: var(--color-text-secondary);
+      font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: all 0.12s;
+    }
+    .ai-topics-btn:hover:not(:disabled) { border-color: #8B5CF6; color: #7C3AED; background: #F5F3FF; }
+    .ai-topics-btn:disabled { opacity: 0.6; cursor: default; }
+    .ai-topics-error { font-size: 12.5px; color: var(--color-destructive); margin: 8px 0 0; }
+
+    .ai-topics-panel {
+      margin-top: 16px; padding: 16px;
+      background: var(--color-surface-raised); border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+    }
+    .ai-topics-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; color: var(--color-text); }
+    .ai-topics-hint { font-size: 12px; color: var(--color-text-muted); margin: 0 0 12px; }
+    .ai-topics-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .ai-topic-item {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 12px; border-radius: var(--radius-sm);
+      background: var(--color-surface); border: 1px solid var(--color-border);
+    }
+    .ai-topic-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .ai-topic-name { font-size: 13px; font-weight: 500; color: var(--color-text); }
+    .ai-topic-angle { font-size: 12px; color: var(--color-text-muted); line-height: 1.4; }
+    .ai-topic-add {
+      flex-shrink: 0; height: 28px; padding: 0 10px;
+      border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+      background: transparent; color: var(--color-text-secondary);
+      font-family: var(--font-sans); font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all 0.12s;
+    }
+    .ai-topic-add:hover { border-color: var(--color-accent); color: var(--color-accent); }
+    .btn-dismiss-topics {
+      margin-top: 12px; padding: 6px 12px; border-radius: var(--radius-sm);
+      background: transparent; color: var(--color-text-muted);
+      border: 1px solid var(--color-border); font-family: var(--font-sans); font-size: 12px;
+      cursor: pointer; transition: border-color 0.12s;
+    }
+    .btn-dismiss-topics:hover { border-color: var(--color-text-muted); }
   `]
 })
 export class WrittenContent implements OnInit {
@@ -812,6 +881,9 @@ export class WrittenContent implements OnInit {
 
   protected pageDrafting = signal(false);
   protected pageDraftError = signal<string | null>(null);
+  protected aiTopicsLoading = signal(false);
+  protected aiTopicsError = signal<string | null>(null);
+  protected aiTopicsResult = signal<{ title: string; angle: string }[] | null>(null);
 
   protected aiDraftPage() {
     const page = this.selectedPage();
@@ -862,6 +934,26 @@ export class WrittenContent implements OnInit {
     if (this.briefForm.invalid) return;
     const v = this.briefForm.value;
     this.projectService.upsertContent(this.projectId, { contentBrief: v.contentBrief ?? undefined, toneOfVoice: v.toneOfVoice ?? undefined }).subscribe();
+  }
+
+  protected aiSuggestTopics() {
+    this.aiTopicsError.set(null);
+    this.aiTopicsResult.set(null);
+    this.aiTopicsLoading.set(true);
+    this.projectService.aiSuggestProfiling(this.projectId).subscribe({
+      next: (r) => { this.aiTopicsResult.set(r.contentTopics); this.aiTopicsLoading.set(false); },
+      error: (err) => { this.aiTopicsError.set(err?.error?.error ?? 'AI suggestion failed. Please try again.'); this.aiTopicsLoading.set(false); },
+    });
+  }
+
+  protected addTopicAsPage(title: string) {
+    this.projectService.createPage(this.projectId, { title, status: 'DRAFT', sortOrder: this.pages().length + 1 }).subscribe(p => {
+      this.pages.update(list => [...list, {
+        id: p.id, title: p.title, status: p.status as PageStatus, sortOrder: p.sortOrder,
+        body: p.body ?? '', wordCount: p.wordCount ?? 0,
+        seoTitle: p.metaTitle ?? '', seoDescription: p.metaDescription ?? '',
+      }]);
+    });
   }
 
   protected approveGate() {

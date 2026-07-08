@@ -405,4 +405,11 @@ export class ProjectService {
       `/projects/${projectId}/reports/ai-draft`, { type },
     );
   }
+
+  aiSuggestProfiling(projectId: string) {
+    return this.api.post<{
+      keywords: { primary: string[]; secondary: string[]; longTail: string[] };
+      contentTopics: { title: string; angle: string }[];
+    }>(`/projects/${projectId}/profiling/ai-suggest`, {});
+  }
 }
