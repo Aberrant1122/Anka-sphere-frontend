@@ -1,4 +1,4 @@
-import { Component, signal, computed, inject, OnInit } from '@angular/core';
+import { Component, signal, computed, inject, OnInit, DestroyRef } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
@@ -8,7 +8,8 @@ import { ProjectService } from '../../../services/project.service';
 import { ProjectStateService } from '../../../services/project-state.service';
 import { AuthService } from '../../../services/auth.service';
 import { NotificationService } from '../../../services/notification.service';
-import { AiUsage, AiImageResult } from '../../../models/project.models';
+import { IntegrationService } from '../../../services/integration.service';
+import { AiUsage, AiImageResult, AiImageModel, AiVideoRatio, AiVideoTaskState } from '../../../models/project.models';
 
 type TabId = 'brief' | 'kanban' | 'assets' | 'ai' | 'gate';
 type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'DONE';
@@ -287,6 +288,8 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
                   <div class="asset-thumb" [class]="'type-' + asset.type.toLowerCase()">
                     @if (asset.thumbnailUrl) {
                       <img [src]="asset.thumbnailUrl" [alt]="asset.name" loading="lazy" />
+                    } @else if (asset.type === 'IMAGE' && asset.url) {
+                      <img [src]="asset.url" [alt]="asset.name" loading="lazy" />
                     } @else {
                       <span class="asset-type-icon" aria-hidden="true">{{ assetIcon(asset.type) }}</span>
                     }
@@ -304,7 +307,8 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
                     }
                   </div>
                   <div class="asset-actions">
-                    <a class="asset-link-btn" [href]="asset.url" target="_blank" rel="noopener noreferrer" aria-label="Open asset">
+                    <a class="asset-link-btn" [href]="asset.url" target="_blank" rel="noopener noreferrer"
+                      (click)="openAsset(asset, $event)" aria-label="Open asset">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                     </a>
                     @if (!asset.approvedAt) {
@@ -324,39 +328,125 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
 
         <!-- AI Images tab -->
         @if (activeTab() === 'ai') {
-          <section aria-label="AI image generation" class="ai-panel">
+          <section aria-label="AI image and video generation" class="ai-panel">
             <div class="ai-gen-card">
+              <h3 class="ai-usage-title">AI Images</h3>
+
+              <!-- Prompt Templates selector -->
+              <div class="prompt-templates-row" style="margin-bottom: 12px; display: flex; gap: 8px; align-items: center;">
+                <div style="flex: 1;">
+                  <select class="ai-size-select" style="width: 100%; max-width: 100%;" [value]="selectedTemplateId()" (change)="onTemplateChange($any($event.target).value)" aria-label="Prompt template">
+                    <option value="">Select a saved prompt template...</option>
+                    @for (t of promptTemplates(); track t.id) {
+                      <option [value]="t.id">{{ t.name }}</option>
+                    }
+                  </select>
+                </div>
+                <button class="btn-save" style="margin: 0; padding: 8px 14px; font-size: 12.5px; display: flex; align-items: center; gap: 4px;" type="button" (click)="saveCurrentAsTemplate()" [disabled]="aiPrompt().trim().length < 3 || savingTemplate()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  Save as Template
+                </button>
+                @if (selectedTemplateId()) {
+                  <button class="btn-ghost" style="color: #DC2626; margin: 0; padding: 8px 10px; font-size: 12.5px;" type="button" (click)="deleteTemplate(selectedTemplateId(), $event)">
+                    Delete Template
+                  </button>
+                }
+              </div>
+
               <label class="field-label" for="ai-prompt">Describe the image you need</label>
               <textarea id="ai-prompt" class="field-textarea" rows="3"
                 placeholder="e.g. Minimalist hero illustration of fresh vegetables on a pastel green background, soft studio lighting"
                 [value]="aiPrompt()" (input)="aiPrompt.set($any($event.target).value)"
                 [disabled]="aiGenerating()"></textarea>
+
+              <!-- Style presets & Variations -->
+              <div style="display: flex; gap: 12px; margin-top: 10px; margin-bottom: 12px;">
+                <div style="flex: 1;">
+                  <label class="field-label" style="font-size: 11.5px; margin-bottom: 4px; color: var(--color-text-muted);">Style Preset (Appended to prompt under-the-hood)</label>
+                  <select class="ai-size-select" style="width: 100%; max-width: 100%;" [value]="selectedStylePreset()" (change)="selectedStylePreset.set($any($event.target).value)">
+                    <option value="none">Manual / No Preset</option>
+                    <option value="photorealistic">Photorealistic (8k, detailed, commercial studio photo)</option>
+                    <option value="flat">Flat vector illustration (minimalist corporate graphic)</option>
+                    <option value="minimal">Minimalist (clean, simple negative space)</option>
+                    <option value="corporate">Professional Corporate (clean branding)</option>
+                    <option value="lifestyle">Lifestyle photography (authentic warm lighting)</option>
+                    <option value="product">Commercial Product Shot (studio reflection, key lighting)</option>
+                  </select>
+                </div>
+                <div style="width: 140px;">
+                  <label class="field-label" style="font-size: 11.5px; margin-bottom: 4px; color: var(--color-text-muted);">Variations (Batch)</label>
+                  <select class="ai-size-select" style="width: 100%;" [value]="aiCount()" (change)="aiCount.set(+$any($event.target).value)">
+                    <option [value]="1">1 variation</option>
+                    <option [value]="2">2 variations</option>
+                    <option [value]="3">3 variations</option>
+                  </select>
+                </div>
+              </div>
+
               <div class="ai-controls">
+                <select class="ai-size-select" [value]="aiModel()" (change)="aiModel.set($any($event.target).value)"
+                  aria-label="Image model" [disabled]="aiGenerating() || aiProviders().length === 0">
+                  @for (p of aiProviders(); track p.value) {
+                    <option [value]="p.value">{{ p.label }}</option>
+                  }
+                  @if (aiProviders().length === 0) {
+                    <option value="" disabled selected>No model configured</option>
+                  }
+                </select>
                 <select class="ai-size-select" [value]="aiSize()" (change)="aiSize.set($any($event.target).value)"
                   aria-label="Image size" [disabled]="aiGenerating()">
-                  <option value="1024x1024">Square · 1024×1024 ($0.04)</option>
-                  <option value="1536x1024">Landscape · 1536×1024 ($0.06)</option>
-                  <option value="1024x1536">Portrait · 1024×1536 ($0.06)</option>
+                  <option value="1024x1024">Square · 1024×1024 ({{ sizeCost('1024x1024') }})</option>
+                  <option value="1536x1024">Landscape · 1536×1024 ({{ sizeCost('1536x1024') }})</option>
+                  <option value="1024x1536">Portrait · 1024×1536 ({{ sizeCost('1024x1536') }})</option>
                 </select>
                 <button class="btn-save" type="button" (click)="generateImage()"
-                  [disabled]="aiGenerating() || aiPrompt().trim().length < 3">
-                  @if (aiGenerating()) { Generating… } @else { Generate Image }
+                  style="display: flex; align-items: center; justify-content: center; gap: 8px;"
+                  [disabled]="aiGenerating() || aiPrompt().trim().length < 3 || aiProviders().length === 0">
+                  @if (aiGenerating()) {
+                    <div class="spinner" aria-hidden="true"></div>
+                    Generating…
+                  } @else {
+                    Generate Image
+                  }
                 </button>
               </div>
+              @if (aiProviders().length === 0) {
+                <p class="ai-provider-hint">No image provider is configured. Add an OpenAI or Stability API key on the server to enable AI images.</p>
+              }
               @if (aiError()) { <div class="ai-error" role="alert">{{ aiError() }}</div> }
             </div>
 
             @if (aiResult(); as result) {
               <div class="ai-result-card">
-                <img class="ai-result-img" [src]="result.image" alt="AI-generated image for prompt: {{ aiPrompt() }}" />
+                <!-- If multiple variations exist, show a premium sub-gallery -->
+                @if (aiImagesList().length > 1) {
+                  <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+                    @for (imgUrl of aiImagesList(); track imgUrl; let idx = $index) {
+                      <button class="ftab" [class.active]="activeVariationIndex() === idx" (click)="activeVariationIndex.set(idx)" style="display: flex; align-items: center; gap: 6px; padding: 6px 10px;">
+                        <img [src]="imgUrl" style="width: 20px; height: 20px; border-radius: 4px; object-fit: cover;" alt="Var preview" />
+                        Variation {{ idx + 1 }}
+                      </button>
+                    }
+                  </div>
+                }
+
+                <div style="position: relative;">
+                  <img class="ai-result-img" [src]="aiImagesList()[activeVariationIndex()] || result.image" alt="AI-generated image" />
+                  @if (aiImagesList().length > 1) {
+                    <div style="position: absolute; bottom: 8px; right: 8px; background: rgba(0, 0, 0, 0.75); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">
+                      Variation {{ activeVariationIndex() + 1 }} of {{ aiImagesList().length }}
+                    </div>
+                  }
+                </div>
+
                 @if (result.revisedPrompt) {
                   <p class="ai-revised">DALL·E interpreted your prompt as: “{{ result.revisedPrompt }}”</p>
                 }
                 <div class="ai-result-actions">
                   @if (aiSaved()) {
-                    <span class="ai-saved-ok" role="status">✓ Saved to asset library</span>
+                    <span class="ai-saved-ok" role="status">✓ Saved Var {{ activeVariationIndex() + 1 }} to asset library</span>
                   } @else {
-                    <button class="btn-save" type="button" (click)="saveAiImageToAssets()" [disabled]="aiEditing()">Save to Assets</button>
+                    <button class="btn-save" type="button" (click)="saveAiImageToAssets()" [disabled]="aiEditing()">Save Var {{ activeVariationIndex() + 1 }} to Assets</button>
                   }
                   <button class="btn-ghost" type="button" (click)="generateImage()"
                     [disabled]="aiGenerating() || aiEditing()"
@@ -369,19 +459,96 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
                   </button>
                 </div>
 
-                <!-- Refine the current image -->
-                <div class="ai-edit-row">
-                  <input class="ai-edit-input" type="text"
-                    placeholder="Describe a change — e.g. make the bowl dark green, remove the mint leaf"
-                    [value]="aiEditInstruction()"
-                    (input)="aiEditInstruction.set($any($event.target).value)"
-                    [disabled]="aiEditing()"
-                    aria-label="Edit instruction for the generated image" />
-                  <button class="btn-save" type="button" (click)="editImage()"
-                    [disabled]="aiEditing() || aiGenerating() || aiEditInstruction().trim().length < 3">
-                    @if (aiEditing()) { Editing… } @else { Apply Edit }
+                <!-- Refine the current image (image edits go through OpenAI) -->
+                @if (openaiConfigured()) {
+                  <div class="ai-edit-row">
+                    <input class="ai-edit-input" type="text"
+                      placeholder="Describe a change — e.g. make the bowl dark green, remove the mint leaf"
+                      [value]="aiEditInstruction()"
+                      (input)="aiEditInstruction.set($any($event.target).value)"
+                      [disabled]="aiEditing()"
+                      aria-label="Edit instruction for the generated image" />
+                    <button class="btn-save" type="button" (click)="editImage()"
+                      style="display: flex; align-items: center; justify-content: center; gap: 8px;"
+                      [disabled]="aiEditing() || aiGenerating() || aiEditInstruction().trim().length < 3">
+                      @if (aiEditing()) {
+                        <div class="spinner" aria-hidden="true"></div>
+                        Editing…
+                      } @else {
+                        Apply Edit
+                      }
+                    </button>
+                  </div>
+                }
+              </div>
+            }
+
+            <!-- AI Video (Runway gen4_turbo — async: create task, poll, preview, save) -->
+            @if (runwayConfigured()) {
+              <div class="ai-gen-card">
+                <h3 class="ai-usage-title">AI Video</h3>
+                <label class="field-label" for="ai-video-prompt">Describe the video you need</label>
+                <textarea id="ai-video-prompt" class="field-textarea" rows="3"
+                  placeholder="e.g. Slow cinematic pan over a rustic wooden table with fresh vegetables, morning light, shallow depth of field"
+                  [value]="videoPrompt()" (input)="videoPrompt.set($any($event.target).value)"
+                  [disabled]="videoBusy()"></textarea>
+                <div class="ai-controls">
+                  <select class="ai-size-select" [value]="videoRatio()" (change)="videoRatio.set($any($event.target).value)"
+                    aria-label="Video aspect ratio" [disabled]="videoBusy()">
+                    <option value="1280:720">Landscape · 1280×720</option>
+                    <option value="720:1280">Portrait · 720×1280</option>
+                    <option value="960:960">Square · 960×960</option>
+                  </select>
+                  <select class="ai-size-select" [value]="videoDuration()" (change)="setVideoDuration($any($event.target).value)"
+                    aria-label="Video duration" [disabled]="videoBusy()">
+                    <option [value]="5">5 seconds (~$0.25)</option>
+                    <option [value]="10">10 seconds (~$0.50)</option>
+                  </select>
+                  <button class="btn-save" type="button" (click)="generateVideo()"
+                    style="display: flex; align-items: center; justify-content: center; gap: 8px;"
+                    [disabled]="videoBusy() || videoPrompt().trim().length < 3">
+                    @if (videoBusy()) {
+                      <div class="spinner" aria-hidden="true"></div>
+                      Generating…
+                    } @else {
+                      Generate Video
+                    }
                   </button>
                 </div>
+                @if (videoError()) { <div class="ai-error" role="alert">{{ videoError() }}</div> }
+
+                @if (videoBusy()) {
+                  <div class="video-progress" role="status" aria-label="Video generation progress">
+                    <div class="progress-bar">
+                      <div class="progress-fill" [style.width.%]="videoProgressPct()"></div>
+                    </div>
+                    <span class="video-progress-label">
+                      {{ videoStatusLabel() }}@if (videoProgressPct() > 0) { · {{ videoProgressPct() }}%}
+                    </span>
+                  </div>
+                }
+
+                @if (videoUrl(); as url) {
+                  <video class="ai-video-preview" [src]="url" controls preload="metadata"
+                    aria-label="AI-generated video preview"></video>
+                  <div class="ai-result-actions">
+                    @if (videoSaved()) {
+                      <span class="ai-saved-ok" role="status">✓ Saved to asset library</span>
+                    } @else {
+                      <button class="btn-save" type="button" (click)="saveAiVideoToAssets()"
+                        style="display: flex; align-items: center; justify-content: center; gap: 8px;"
+                        [disabled]="videoSaving()">
+                        @if (videoSaving()) {
+                          <div class="spinner" aria-hidden="true"></div>
+                          Saving…
+                        } @else {
+                          Save to Assets
+                        }
+                      </button>
+                    }
+                    <button class="btn-ghost" type="button" (click)="discardAiVideo()" [disabled]="videoSaving()">Discard</button>
+                  </div>
+                }
               </div>
             }
 
@@ -570,6 +737,7 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
     .ai-panel { display: flex; flex-direction: column; gap: 16px; }
     .ai-gen-card, .ai-result-card, .ai-usage-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
     .ai-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ai-provider-hint { font-size: 12.5px; color: var(--color-text-muted); margin: 0; }
     .ai-size-select { height: 36px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: 13px; color: var(--color-text); background: var(--color-surface); cursor: pointer; }
     .ai-error { font-size: 12.5px; color: #DC2626; background: #FEF2F2; border: 1px solid #FECACA; border-radius: var(--radius-md); padding: 8px 12px; }
     .ai-result-img { max-width: 100%; max-height: 480px; object-fit: contain; border-radius: var(--radius-md); border: 1px solid var(--color-border); align-self: flex-start; }
@@ -580,6 +748,9 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
     .btn-ghost:hover:not(:disabled) { background: var(--color-surface-raised); }
     .btn-ghost:disabled { opacity: 0.5; cursor: default; }
     .ai-edit-row { display: flex; gap: 8px; align-items: center; }
+    .ai-video-preview { max-width: 100%; max-height: 480px; border-radius: var(--radius-md); border: 1px solid var(--color-border); align-self: flex-start; background: #000; }
+    .video-progress { display: flex; flex-direction: column; gap: 6px; }
+    .video-progress-label { font-size: 12px; color: var(--color-text-muted); }
     .ai-edit-input { flex: 1; height: 36px; padding: 0 12px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: 13px; color: var(--color-text); background: var(--color-surface); outline: none; }
     .ai-edit-input:focus { border-color: var(--color-accent, #16A34A); }
     .ai-usage-title { font-size: 13px; font-weight: 600; color: var(--color-text); margin: 0; }
@@ -716,6 +887,21 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
     .spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .empty-hint { font-size: 13px; color: var(--color-text-muted); padding: 16px 0; }
+
+    @media (max-width: 768px) {
+      .section-title-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+      .tab-nav { overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+      .tab-btn { flex-shrink: 0; }
+      .kanban-board { grid-template-columns: 1fr; }
+      .gate-wrap { grid-template-columns: 1fr; gap: 16px; }
+      .asset-form-grid { grid-template-columns: 1fr; }
+      .ai-controls { flex-direction: column; align-items: stretch; gap: 8px; }
+      .ai-controls select, .ai-controls button { width: 100% !important; margin: 0; }
+      .ai-edit-row { flex-direction: column; align-items: stretch; gap: 8px; }
+      .ai-edit-input { width: 100% !important; }
+      .prompt-templates-row { flex-direction: column; align-items: stretch; gap: 8px; }
+      .prompt-templates-row > * { width: 100% !important; margin: 0; }
+    }
   `]
 })
 export class DesignModule implements OnInit {
@@ -725,6 +911,7 @@ export class DesignModule implements OnInit {
   private state = inject(ProjectStateService);
   private auth  = inject(AuthService);
   private notifService = inject(NotificationService);
+  private integrationService = inject(IntegrationService);
   protected canApprove = computed(() => this.auth.canApproveStage('DESIGN'));
 
   private get projectId(): string {
@@ -737,7 +924,7 @@ export class DesignModule implements OnInit {
     { id: 'brief'  as TabId, label: 'Design Brief', badge: () => null },
     { id: 'kanban' as TabId, label: 'Kanban',       badge: () => this.tasks().length > 0 ? this.tasks().length : null },
     { id: 'assets' as TabId, label: 'Assets',       badge: () => this.assets().length > 0 ? this.assets().length : null },
-    { id: 'ai'     as TabId, label: 'AI Images',    badge: () => null },
+    { id: 'ai'     as TabId, label: 'AI Studio',    badge: () => null },
     { id: 'gate'   as TabId, label: 'Soft Gate',    badge: () => null },
   ];
 
@@ -764,23 +951,230 @@ export class DesignModule implements OnInit {
   // ── AI image generation ────────────────────────────────────────────────────
   protected aiPrompt     = signal('');
   protected aiSize       = signal<'1024x1024' | '1536x1024' | '1024x1536'>('1024x1024');
+  protected aiModel      = signal<AiImageModel>('openai');
   protected aiGenerating = signal(false);
   protected aiError      = signal<string | null>(null);
-  protected aiResult     = signal<AiImageResult | null>(null);
+  protected aiResult     = signal<any | null>(null);
   protected aiSaved      = signal(false);
   protected aiUsage      = signal<AiUsage | null>(null);
+
+  // Advanced AI features signals
+  protected promptTemplates      = signal<any[]>([]);
+  protected selectedStylePreset  = signal<string>('none');
+  protected aiCount              = signal<number>(1);
+  protected activeVariationIndex = signal<number>(0);
+  protected aiImagesList         = signal<string[]>([]);
+  protected selectedTemplateId   = signal<string>('');
+  protected savingTemplate       = signal(false);
+
+  /** Which image providers have server-side credentials (from GET /integrations). */
+  private configuredProviders = signal<Set<string>>(new Set(['OPENAI']));
+  protected aiProviders = computed<{ value: AiImageModel; label: string }[]>(() => {
+    const configured = this.configuredProviders();
+    const list: { value: AiImageModel; label: string }[] = [];
+    if (configured.has('OPENAI'))    list.push({ value: 'openai',    label: 'OpenAI' });
+    if (configured.has('STABILITY')) list.push({ value: 'stability', label: 'Stability' });
+    return list;
+  });
+  protected openaiConfigured = computed(() => this.configuredProviders().has('OPENAI'));
+  protected runwayConfigured = computed(() => this.configuredProviders().has('RUNWAY'));
+
+  // ── AI video generation (Runway — async task, polled every few seconds) ────
+  protected videoPrompt   = signal('');
+  protected videoRatio    = signal<AiVideoRatio>('1280:720');
+  protected videoDuration = signal<5 | 10>(5);
+  protected videoBusy     = signal(false);
+  protected videoStatus   = signal<AiVideoTaskState | null>(null);
+  protected videoProgress = signal(0);
+  protected videoError    = signal<string | null>(null);
+  protected videoUrl      = signal<string | null>(null);
+  protected videoTaskId   = signal<string | null>(null);
+  protected videoSaved    = signal(false);
+  protected videoSaving   = signal(false);
+
+  private activeVideoBlobUrl: string | null = null;
+
+  private setVideoUrl(url: string | null): void {
+    if (this.activeVideoBlobUrl) {
+      URL.revokeObjectURL(this.activeVideoBlobUrl);
+      this.activeVideoBlobUrl = null;
+    }
+
+    if (url && url.startsWith('data:')) {
+      try {
+        const parts = url.split(',');
+        const byteString = atob(parts[1]);
+        const mimeString = parts[0].split(':')[1].split(';')[0];
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([ab], { type: mimeString });
+        const blobUrl = URL.createObjectURL(blob);
+        this.activeVideoBlobUrl = blobUrl;
+        this.videoUrl.set(blobUrl);
+      } catch (e) {
+        console.error('Failed to convert video data URI to Blob URL:', e);
+        this.videoUrl.set(url);
+      }
+    } else {
+      this.videoUrl.set(url);
+    }
+  }
+
+  private videoPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private destroyRef = inject(DestroyRef);
+
+  protected videoProgressPct = computed(() => Math.round(this.videoProgress() * 100));
+
+  protected setVideoDuration(value: string): void {
+    this.videoDuration.set(value === '10' ? 10 : 5);
+  }
+  protected videoStatusLabel = computed(() => {
+    switch (this.videoStatus()) {
+      case 'RUNNING':   return 'Generating video';
+      case 'THROTTLED': return 'Queued (provider busy)';
+      default:          return 'Starting up';
+    }
+  });
+
+  protected generateVideo(): void {
+    if (this.hasUnsavedAiVideo() && !confirm('The current video has not been saved to Assets and will be replaced. Continue?')) return;
+    this.videoError.set(null);
+    this.setVideoUrl(null);
+    this.videoSaved.set(false);
+    this.videoProgress.set(0);
+    this.videoStatus.set(null);
+    this.videoBusy.set(true);
+    this.projectService.generateAiVideo(this.projectId, {
+      prompt: this.videoPrompt().trim(),
+      duration: this.videoDuration(),
+      ratio: this.videoRatio(),
+    }).subscribe({
+      next: ({ taskId }) => {
+        this.videoTaskId.set(taskId);
+        this.pollVideoTask(taskId);
+      },
+      error: (err) => {
+        this.videoError.set(err?.error?.error ?? 'Video generation failed to start. Please try again.');
+        this.videoBusy.set(false);
+        this.loadAiUsage();
+      },
+    });
+  }
+
+  private pollVideoTask(taskId: string): void {
+    this.projectService.getAiVideoTask(this.projectId, taskId).subscribe({
+      next: (task) => {
+        if (this.videoTaskId() !== taskId) return; // superseded by a newer generation
+        this.videoStatus.set(task.status);
+        this.videoProgress.set(task.progress);
+        if (task.status === 'SUCCEEDED' && task.videoUrl) {
+          this.setVideoUrl(task.videoUrl);
+          this.videoBusy.set(false);
+          this.loadAiUsage();
+        } else if (task.status === 'FAILED' || task.status === 'CANCELLED') {
+          this.videoError.set(task.failure ?? 'Video generation failed. Please try again.');
+          this.videoBusy.set(false);
+          this.loadAiUsage();
+        } else {
+          this.scheduleVideoPoll(taskId);
+        }
+      },
+      error: () => {
+        if (this.videoTaskId() !== taskId) return;
+        // Transient poll failure — keep trying, the task is still running server-side
+        this.scheduleVideoPoll(taskId);
+      },
+    });
+  }
+
+  private scheduleVideoPoll(taskId: string): void {
+    if (this.videoPollTimer) clearTimeout(this.videoPollTimer);
+    this.videoPollTimer = setTimeout(() => this.pollVideoTask(taskId), 4000);
+  }
+
+  protected saveAiVideoToAssets(): void {
+    const taskId = this.videoTaskId();
+    if (!taskId) return;
+    this.videoSaving.set(true);
+    this.projectService.saveAiVideoToAssets(this.projectId, taskId, {
+      assetName: `AI Video · ${this.videoPrompt().trim().slice(0, 60)}`,
+    }).subscribe({
+      next: ({ asset }) => {
+        this.assets.update(list => [...list, { id: asset.id, name: asset.name, type: asset.type as AssetType, url: asset.url, thumbnailUrl: '', version: asset.version, notes: asset.notes ?? '', approvedAt: asset.approvedAt ?? null }]);
+        this.videoSaved.set(true);
+        this.videoSaving.set(false);
+      },
+      error: (err) => {
+        this.videoError.set(err?.error?.error ?? 'Could not save the video to Assets.');
+        this.videoSaving.set(false);
+      },
+    });
+  }
+
+  protected discardAiVideo(): void {
+    if (this.hasUnsavedAiVideo() && !confirm('This video has not been saved to Assets. Discard it anyway?')) return;
+    this.setVideoUrl(null);
+    this.videoTaskId.set(null);
+    this.videoSaved.set(false);
+    this.videoError.set(null);
+    this.videoStatus.set(null);
+    this.videoProgress.set(0);
+  }
+
+  private hasUnsavedAiVideo(): boolean {
+    return !!this.videoUrl() && !this.videoSaved();
+  }
+
+  // gpt-image-1 charges per size; Stable Image Core is a flat ~$0.03/image
+  protected sizeCost(size: string): string {
+    if (this.aiModel() === 'stability') return '$0.03';
+    return size === '1024x1024' ? '$0.04' : '$0.06';
+  }
+
+  private loadIntegrations(): void {
+    this.integrationService.getIntegrations().subscribe({
+      next: ({ integrations }) => {
+        const configured = new Set(
+          integrations.filter(i => i.configured).map(i => i.provider as string),
+        );
+        this.configuredProviders.set(configured);
+        // If the current selection is unavailable, fall back to the first configured provider
+        const providers = this.aiProviders();
+        if (providers.length > 0 && !providers.some(p => p.value === this.aiModel())) {
+          this.aiModel.set(providers[0].value);
+        }
+      },
+      error: () => { /* picker falls back to OpenAI-only */ },
+    });
+  }
 
   protected generateImage(): void {
     if (this.hasUnsavedAiImage() && !confirm('The current image has not been saved to Assets and will be replaced. Continue?')) return;
     this.aiError.set(null);
     this.aiSaved.set(false);
     this.aiGenerating.set(true);
+
+    const preset = this.selectedStylePreset();
+    const modifier = this.getStyleModifier(preset);
+    const fullPrompt = this.aiPrompt().trim() + modifier;
+
     this.projectService.generateAiImage(this.projectId, {
-      prompt: this.aiPrompt().trim(),
+      prompt: fullPrompt,
       size: this.aiSize(),
+      model: this.aiModel(),
+      count: this.aiCount(),
     }).subscribe({
       next: (res) => {
         this.aiResult.set(res);
+        if (res.images && res.images.length > 0) {
+          this.aiImagesList.set(res.images);
+        } else {
+          this.aiImagesList.set([res.image]);
+        }
+        this.activeVariationIndex.set(0);
         this.aiGenerating.set(false);
         this.loadAiUsage();
       },
@@ -795,11 +1189,15 @@ export class DesignModule implements OnInit {
   protected saveAiImageToAssets(): void {
     const result = this.aiResult();
     if (!result) return;
+    const images = this.aiImagesList();
+    const idx = this.activeVariationIndex();
+    const imageUrl = images[idx] || result.image;
+
     this.projectService.createDesignAsset(this.projectId, {
-      name: `AI · ${this.aiPrompt().trim().slice(0, 60)}`,
+      name: `AI · ${this.aiPrompt().trim().slice(0, 50)} · Var ${idx + 1}`,
       type: 'IMAGE' as AssetType,
-      url: result.image,
-      notes: `AI-generated. Prompt: ${this.aiPrompt().trim().slice(0, 300)}`,
+      url: imageUrl,
+      notes: `AI-generated. Style: ${this.selectedStylePreset()}. Prompt: ${this.aiPrompt().trim().slice(0, 300)}`,
       version: 1,
     }).subscribe((a) => {
       this.assets.update(list => [...list, { id: a.id, name: a.name, type: a.type as AssetType, url: a.url, thumbnailUrl: '', version: a.version, notes: a.notes ?? '', approvedAt: a.approvedAt ?? null }]);
@@ -813,16 +1211,22 @@ export class DesignModule implements OnInit {
   protected editImage(): void {
     const result = this.aiResult();
     if (!result) return;
+    const images = this.aiImagesList();
+    const idx = this.activeVariationIndex();
+    const imageUrl = images[idx] || result.image;
+
     this.aiError.set(null);
     this.aiSaved.set(false);
     this.aiEditing.set(true);
     this.projectService.editAiImage(this.projectId, {
-      image: result.image,
+      image: imageUrl,
       instruction: this.aiEditInstruction().trim(),
       size: this.aiSize(),
     }).subscribe({
       next: (res) => {
         this.aiResult.set(res);
+        this.aiImagesList.set([res.image]);
+        this.activeVariationIndex.set(0);
         this.aiEditInstruction.set('');
         this.aiEditing.set(false);
         this.loadAiUsage();
@@ -838,6 +1242,8 @@ export class DesignModule implements OnInit {
   protected discardAiResult(): void {
     if (this.hasUnsavedAiImage() && !confirm('This image has not been saved to Assets. Discard it anyway?')) return;
     this.aiResult.set(null);
+    this.aiImagesList.set([]);
+    this.activeVariationIndex.set(0);
     this.aiSaved.set(false);
     this.aiEditInstruction.set('');
     this.aiError.set(null);
@@ -849,12 +1255,17 @@ export class DesignModule implements OnInit {
 
   /** Route guard hook — see canDeactivate on the design route. */
   canLeave(): boolean {
-    return !this.hasUnsavedAiImage()
-      || confirm('You have an AI image that has not been saved to Assets. It will be lost if you leave. Leave anyway?');
+    if (this.hasUnsavedAiImage()) {
+      return confirm('You have an AI image that has not been saved to Assets. It will be lost if you leave. Leave anyway?');
+    }
+    if (this.hasUnsavedAiVideo() || this.videoBusy()) {
+      return confirm('You have an AI video that has not been saved to Assets. It will be lost if you leave. Leave anyway?');
+    }
+    return true;
   }
 
   protected onBeforeUnload(e: BeforeUnloadEvent): void {
-    if (this.hasUnsavedAiImage()) e.preventDefault();
+    if (this.hasUnsavedAiImage() || this.hasUnsavedAiVideo() || this.videoBusy()) e.preventDefault();
   }
 
   private loadAiUsage(): void {
@@ -926,6 +1337,12 @@ export class DesignModule implements OnInit {
       })));
     }
     this.loadAiUsage();
+    this.loadIntegrations();
+    this.loadPromptTemplates();
+    this.destroyRef.onDestroy(() => {
+      if (this.videoPollTimer) clearTimeout(this.videoPollTimer);
+      if (this.activeVideoBlobUrl) URL.revokeObjectURL(this.activeVideoBlobUrl);
+    });
   }
 
   protected addTask() {
@@ -983,6 +1400,37 @@ export class DesignModule implements OnInit {
       .subscribe(() => this.assets.update(list => list.filter(a => a.id !== id)));
   }
 
+  protected openAsset(asset: { name: string; url: string }, event: MouseEvent) {
+    if (asset.url.startsWith('data:')) {
+      event.preventDefault();
+      const newTab = window.open();
+      if (newTab) {
+        const safeName = asset.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        newTab.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>${safeName}</title>
+              <style>
+                body { margin: 0; background: #0B0F19; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #fff; }
+                img { max-width: 90%; max-height: 85vh; object-fit: contain; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border-radius: 12px; border: 1px solid #1E293B; }
+                .container { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px; }
+                .title { font-size: 14px; font-weight: 500; color: #94A3B8; letter-spacing: 0.02em; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="title">${safeName}</div>
+                <img src="${asset.url}" alt="${safeName}" />
+              </div>
+            </body>
+          </html>
+        `);
+        newTab.document.close();
+      }
+    }
+  }
+
   protected saveAsset() {
     this.assetForm.markAllAsTouched();
     if (this.assetForm.invalid) return;
@@ -1004,7 +1452,10 @@ export class DesignModule implements OnInit {
     this.briefForm.markAllAsTouched();
     if (this.briefForm.invalid) return;
     const v = this.briefForm.value;
-    this.projectService.upsertDesign(this.projectId, { brief: v.brief ?? undefined, styleGuide: v.styleGuide ?? undefined, figmaUrl: v.figmaUrl ?? undefined }).subscribe();
+    this.projectService.upsertDesign(this.projectId, { brief: v.brief ?? undefined, styleGuide: v.styleGuide ?? undefined, figmaUrl: v.figmaUrl ?? undefined })
+      .subscribe(() => {
+        this.projectService.getProject(this.projectId).subscribe(p => this.state.setProject(p));
+      });
   }
 
   protected approveGate() {
@@ -1032,5 +1483,71 @@ export class DesignModule implements OnInit {
         this.gateSubmitting.set(false);
       },
     });
+  }
+
+  // ── Prompt Templates & Style Presets Helpers ────────────────────────────────
+
+  protected loadPromptTemplates(): void {
+    this.projectService.getPromptTemplates(this.projectId).subscribe({
+      next: (res) => this.promptTemplates.set(res)
+    });
+  }
+
+  protected onTemplateChange(templateId: string): void {
+    this.selectedTemplateId.set(templateId);
+    if (!templateId) return;
+    const template = this.promptTemplates().find(t => t.id === templateId);
+    if (template) {
+      this.aiPrompt.set(template.prompt);
+    }
+  }
+
+  protected saveCurrentAsTemplate(): void {
+    const prompt = this.aiPrompt().trim();
+    if (!prompt) return;
+    const name = window.prompt('Enter a name for this prompt template:');
+    if (!name) return;
+
+    this.savingTemplate.set(true);
+    this.projectService.createPromptTemplate(this.projectId, { name, prompt }).subscribe({
+      next: (template) => {
+        this.promptTemplates.update(list => [...list, template]);
+        this.selectedTemplateId.set(template.id);
+        this.savingTemplate.set(false);
+      },
+      error: () => this.savingTemplate.set(false)
+    });
+  }
+
+  protected deleteTemplate(templateId: string, event: Event): void {
+    event.stopPropagation();
+    event.preventDefault();
+    if (confirm('Are you sure you want to delete this prompt template?')) {
+      this.projectService.deletePromptTemplate(this.projectId, templateId).subscribe(() => {
+        this.promptTemplates.update(list => list.filter(t => t.id !== templateId));
+        if (this.selectedTemplateId() === templateId) {
+          this.selectedTemplateId.set('');
+        }
+      });
+    }
+  }
+
+  protected getStyleModifier(preset: string): string {
+    switch (preset) {
+      case 'photorealistic':
+        return ', photorealistic, 8k resolution, highly detailed, dramatic lighting, commercial product photo';
+      case 'flat':
+        return ', flat vector illustration, minimalist style, clean colors, corporate graphic style';
+      case 'minimal':
+        return ', minimalist style, clean, simple, light background, negative space';
+      case 'corporate':
+        return ', clean corporate style, professional, modern branding, high-end design';
+      case 'lifestyle':
+        return ', lifestyle shot, authentic, warm lighting, natural look, high quality photography';
+      case 'product':
+        return ', professional product studio shot, clean background, reflection, commercial key lighting';
+      default:
+        return '';
+    }
   }
 }

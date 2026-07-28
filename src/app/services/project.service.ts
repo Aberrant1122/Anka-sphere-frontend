@@ -25,6 +25,24 @@ import {
   EmailDeliveryUpsert,
   AiUsage,
   AiImageResult,
+  AiVideoCreateResult,
+  AiVideoTaskStatus,
+  AiVideoRatio,
+  MetricsEnvelope,
+  Ga4Metrics,
+  GscMetrics,
+  AdAccountSummary,
+  AdAccountLink,
+  AdNetwork,
+  SocialPost,
+  SocialPostInput,
+  EmailCampaign,
+  ContentRepurpose,
+  CommunityQueueItem,
+  AdCreative,
+  ConversionEvent,
+  Backlink,
+  KeywordRankLog,
 } from '../models/project.models';
 
 @Injectable({ providedIn: 'root' })
@@ -370,8 +388,12 @@ export class ProjectService {
   markEmailDeliveryConfigured(projectId: string) {
     return this.api.post<EmailDeliveryProfile>(`/projects/${projectId}/email-delivery/mark-configured`, { configured: true });
   }
-  generateAiImage(projectId: string, data: { prompt: string; size?: string; saveToAssets?: boolean; assetName?: string }) {
-    return this.api.post<AiImageResult>(`/projects/${projectId}/design/ai-images`, data);
+
+  verifyEmailDeliveryDns(projectId: string) {
+    return this.api.post<EmailDeliveryProfile>(`/projects/${projectId}/email-delivery/verify-dns`, {});
+  }
+  generateAiImage(projectId: string, data: { prompt: string; size?: string; model?: string; saveToAssets?: boolean; assetName?: string; count?: number }) {
+    return this.api.post<any>(`/projects/${projectId}/design/ai-images`, data);
   }
 
   editAiImage(projectId: string, data: { image: string; instruction: string; size?: string }) {
@@ -380,6 +402,18 @@ export class ProjectService {
 
   getAiUsage(projectId: string) {
     return this.api.get<AiUsage>(`/projects/${projectId}/design/ai-usage`);
+  }
+
+  generateAiVideo(projectId: string, data: { prompt: string; duration?: 5 | 10; ratio?: AiVideoRatio; image?: string }) {
+    return this.api.post<AiVideoCreateResult>(`/projects/${projectId}/design/ai-videos`, data);
+  }
+
+  getAiVideoTask(projectId: string, taskId: string) {
+    return this.api.get<AiVideoTaskStatus>(`/projects/${projectId}/design/ai-videos/${taskId}`);
+  }
+
+  saveAiVideoToAssets(projectId: string, taskId: string, data: { assetName?: string } = {}) {
+    return this.api.post<{ asset: DesignAsset }>(`/projects/${projectId}/design/ai-videos/${taskId}/save`, data);
   }
 
   generateAiCaptions(projectId: string, data: { platform: string; topic: string }) {
@@ -411,5 +445,265 @@ export class ProjectService {
       keywords: { primary: string[]; secondary: string[]; longTail: string[] };
       contentTopics: { title: string; angle: string }[];
     }>(`/projects/${projectId}/profiling/ai-suggest`, {});
+  // ── Live metrics (GA4 / GSC) ──────────────────────────────────────────────
+
+  getGa4Metrics(projectId: string, range = 30, refresh = false) {
+    return this.api.get<MetricsEnvelope<Ga4Metrics>>(
+      `/projects/${projectId}/analytics/ga4?range=${range}&refresh=${refresh}`,
+    );
+  }
+
+  getGscMetrics(projectId: string, range = 30, refresh = false) {
+    return this.api.get<MetricsEnvelope<GscMetrics>>(
+      `/projects/${projectId}/analytics/gsc?range=${range}&refresh=${refresh}`,
+    );
+  }
+
+  // ── Paid — ad account links + live campaigns ──────────────────────────────
+
+  getAdAccountLinks(projectId: string) {
+    return this.api.get<{ links: AdAccountLink[] }>(`/projects/${projectId}/paid/ad-accounts`);
+  }
+
+  saveAdAccountLink(projectId: string, data: { network: AdNetwork; externalAccountId: string; externalAccountName?: string | null }) {
+    return this.api.put<{ link: AdAccountLink }>(`/projects/${projectId}/paid/ad-accounts`, data);
+  }
+
+  deleteAdAccountLink(projectId: string, network: AdNetwork) {
+    return this.api.delete<{ deleted: boolean }>(`/projects/${projectId}/paid/ad-accounts/${network}`);
+  }
+
+  getGoogleAdsCampaigns(projectId: string, range = 30, refresh = false) {
+    return this.api.get<MetricsEnvelope<AdAccountSummary>>(
+      `/projects/${projectId}/paid/google-ads?range=${range}&refresh=${refresh}`,
+    );
+  }
+
+  getMetaAdsCampaigns(projectId: string, range = 30, refresh = false) {
+    return this.api.get<MetricsEnvelope<AdAccountSummary>>(
+      `/projects/${projectId}/paid/meta-ads?range=${range}&refresh=${refresh}`,
+    );
+  }
+
+  // ── Social posts ──────────────────────────────────────────────────────────
+
+  getSocialPosts(projectId: string) {
+    return this.api.get<{ posts: SocialPost[] }>(`/projects/${projectId}/social/posts`);
+  }
+
+  createSocialPost(projectId: string, data: SocialPostInput) {
+    return this.api.post<{ post: SocialPost }>(`/projects/${projectId}/social/posts`, data);
+  }
+
+  updateSocialPost(projectId: string, postId: string, data: Partial<SocialPostInput>) {
+    return this.api.patch<{ post: SocialPost }>(`/projects/${projectId}/social/posts/${postId}`, data);
+  }
+
+  deleteSocialPost(projectId: string, postId: string) {
+    return this.api.delete<{ deleted: boolean }>(`/projects/${projectId}/social/posts/${postId}`);
+  }
+
+  publishSocialPost(projectId: string, postId: string) {
+    return this.api.post<{ post: SocialPost }>(`/projects/${projectId}/social/posts/${postId}/publish`, {});
+  }
+
+  // ── Per-project Google Credentials ────────────────────────────────────────
+
+  getProjectGoogleCredentials(projectId: string) {
+    return this.api.get<{
+      analyticsPropertyId: string;
+      searchConsoleUrl: string;
+      googleAdsAccountId: string;
+      hasClientId: boolean;
+      hasClientSecret: boolean;
+      hasDeveloperToken: boolean;
+      status: string;
+      connectedAt: string | null;
+      maskedClientId: string | null;
+    }>(`/projects/${projectId}/google-credentials`);
+  }
+
+  saveProjectGoogleCredentials(projectId: string, data: {
+    clientId?: string;
+    clientSecret?: string;
+    developerToken?: string;
+    analyticsPropertyId?: string;
+    searchConsoleUrl?: string;
+    googleAdsAccountId?: string;
+  }) {
+    return this.api.post<{ success: boolean; status: string }>(`/projects/${projectId}/google-credentials`, data);
+  }
+
+  // ── Per-project Social Credentials (Meta & TikTok) ─────────────────────────
+
+  getProjectSocialCredentials(projectId: string) {
+    return this.api.get<{
+      hasMetaAppId: boolean;
+      hasMetaAppSecret: boolean;
+      maskedMetaAppId: string | null;
+      hasTiktokClientKey: boolean;
+      hasTiktokClientSecret: boolean;
+      maskedTiktokClientKey: string | null;
+    }>(`/projects/${projectId}/social-credentials`);
+  }
+
+  saveProjectSocialCredentials(projectId: string, data: {
+    metaAppId?: string;
+    metaAppSecret?: string;
+    tiktokClientKey?: string;
+    tiktokClientSecret?: string;
+  }) {
+    return this.api.post<{ success: boolean }>(`/projects/${projectId}/social-credentials`, data);
+  }
+
+  // ── Email Campaigns ───────────────────────────────────────────────────────
+
+  getEmailCampaigns(projectId: string) {
+    return this.api.get<EmailCampaign[]>(`/projects/${projectId}/email-campaigns`);
+  }
+
+  createEmailCampaign(projectId: string, data: Partial<EmailCampaign>) {
+    return this.api.post<EmailCampaign>(`/projects/${projectId}/email-campaigns`, data);
+  }
+
+  deleteEmailCampaign(projectId: string, campaignId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/email-campaigns/${campaignId}`);
+  }
+
+  // ── Content Repurposing ───────────────────────────────────────────────────
+
+  getContentRepurposes(projectId: string) {
+    return this.api.get<ContentRepurpose[]>(`/projects/${projectId}/repurposing`);
+  }
+
+  createContentRepurpose(projectId: string, data: Partial<ContentRepurpose>) {
+    return this.api.post<ContentRepurpose>(`/projects/${projectId}/repurposing`, data);
+  }
+
+  deleteContentRepurpose(projectId: string, itemId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/repurposing/${itemId}`);
+  }
+
+  // ── Master Content Calendar ───────────────────────────────────────────────
+
+  getMasterCalendar(projectId: string) {
+    return this.api.get<any[]>(`/projects/${projectId}/master-calendar`);
+  }
+
+  // ── Community Queue ───────────────────────────────────────────────────────
+
+  getCommunityQueue(projectId: string) {
+    return this.api.get<CommunityQueueItem[]>(`/projects/${projectId}/social/community-queue`);
+  }
+
+  createCommunityQueueItem(projectId: string, data: Partial<CommunityQueueItem>) {
+    return this.api.post<CommunityQueueItem>(`/projects/${projectId}/social/community-queue`, data);
+  }
+
+  updateCommunityQueueItem(projectId: string, itemId: string, data: Partial<CommunityQueueItem>) {
+    return this.api.patch<CommunityQueueItem>(`/projects/${projectId}/social/community-queue/${itemId}`, data);
+  }
+
+  deleteCommunityQueueItem(projectId: string, itemId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/social/community-queue/${itemId}`);
+  }
+
+  // ── Ad Creatives ──────────────────────────────────────────────────────────
+
+  getAdCreatives(projectId: string) {
+    return this.api.get<AdCreative[]>(`/projects/${projectId}/paid/ad-creatives`);
+  }
+
+  createAdCreative(projectId: string, data: Partial<AdCreative>) {
+    return this.api.post<AdCreative>(`/projects/${projectId}/paid/ad-creatives`, data);
+  }
+
+  deleteAdCreative(projectId: string, creativeId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/paid/ad-creatives/${creativeId}`);
+  }
+
+  // ── Conversion Events ─────────────────────────────────────────────────────
+
+  getConversionEvents(projectId: string) {
+    return this.api.get<ConversionEvent[]>(`/projects/${projectId}/paid/conversion-events`);
+  }
+
+  createConversionEvent(projectId: string, data: Partial<ConversionEvent>) {
+    return this.api.post<ConversionEvent>(`/projects/${projectId}/paid/conversion-events`, data);
+  }
+
+  updateConversionEvent(projectId: string, eventId: string, data: Partial<ConversionEvent>) {
+    return this.api.patch<ConversionEvent>(`/projects/${projectId}/paid/conversion-events/${eventId}`, data);
+  }
+
+  deleteConversionEvent(projectId: string, eventId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/paid/conversion-events/${eventId}`);
+  }
+
+  // ── Backlinks ──────────────────────────────────────────────────────────────
+
+  getBacklinks(projectId: string) {
+    return this.api.get<Backlink[]>(`/projects/${projectId}/seo/backlinks`);
+  }
+
+  createBacklink(projectId: string, data: Partial<Backlink>) {
+    return this.api.post<Backlink>(`/projects/${projectId}/seo/backlinks`, data);
+  }
+
+  deleteBacklink(projectId: string, linkId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/seo/backlinks/${linkId}`);
+  }
+
+  // ── Rank Tracker ──────────────────────────────────────────────────────────
+
+  getKeywordRankLogs(projectId: string) {
+    return this.api.get<KeywordRankLog[]>(`/projects/${projectId}/seo/rank-tracker`);
+  }
+
+  createKeywordRankLog(projectId: string, data: Partial<KeywordRankLog>) {
+    return this.api.post<KeywordRankLog>(`/projects/${projectId}/seo/rank-tracker`, data);
+  }
+
+  // ── Content Pillars ────────────────────────────────────────────────────────
+
+  getPillars(projectId: string) {
+    return this.api.get<any[]>(`/projects/${projectId}/marketing/pillars`);
+  }
+
+  createPillar(projectId: string, data: { name: string; color: string }) {
+    return this.api.post<any>(`/projects/${projectId}/marketing/pillars`, data);
+  }
+
+  deletePillar(projectId: string, pillarId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/marketing/pillars/${pillarId}`);
+  }
+
+  // ── Prompt Templates ───────────────────────────────────────────────────────
+
+  getPromptTemplates(projectId: string) {
+    return this.api.get<any[]>(`/projects/${projectId}/ai/templates`);
+  }
+
+  createPromptTemplate(projectId: string, data: { name: string; prompt: string }) {
+    return this.api.post<any>(`/projects/${projectId}/ai/templates`, data);
+  }
+
+  deletePromptTemplate(projectId: string, templateId: string) {
+    return this.api.delete<void>(`/projects/${projectId}/ai/templates/${templateId}`);
+  }
+
+  updateEmailCampaign(projectId: string, campaignId: string, data: any) {
+    return this.api.patch<any>(`/projects/${projectId}/email-campaigns/${campaignId}`, data);
+  }
+
+  // ── Monthly Content Report ──────────────────────────────────────────────────
+
+  getMonthlyContentReport(projectId: string) {
+    return this.api.get<any>(`/projects/${projectId}/marketing/monthly-report`);
+  }
+
+  getMonthlyContentReportPdf(projectId: string) {
+    return this.api.getBlob(`/projects/${projectId}/marketing/monthly-report/pdf`);
   }
 }
+

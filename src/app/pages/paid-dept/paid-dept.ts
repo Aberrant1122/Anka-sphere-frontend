@@ -1,10 +1,12 @@
 import { Component, signal, computed, inject, OnInit } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { Badge } from '../../ui';
 import { ProjectService } from '../../services/project.service';
-import { Project } from '../../models/project.models';
+import { IntegrationService } from '../../services/integration.service';
+import { Project, AdAccountSummary, AdAccountLink, AdNetwork } from '../../models/project.models';
 
-type TabId = 'projects' | 'budget' | 'adcopy' | 'tasks';
+type TabId = 'projects' | 'live' | 'budget' | 'adcopy' | 'creatives' | 'conversions' | 'tasks';
 
 interface PaidProject {
   id: string; name: string; client: string; clientInitials: string;
@@ -20,7 +22,7 @@ interface PaidTask {
 
 @Component({
   selector: 'app-paid-dept',
-  imports: [RouterLink, Badge],
+  imports: [RouterLink, Badge, DecimalPipe],
   template: `
     <div class="pm-page">
 
@@ -61,6 +63,7 @@ interface PaidTask {
         }
       </div>
 
+
       @if (loading()) {
         <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Loading…</div>
       } @else {
@@ -98,6 +101,79 @@ interface PaidTask {
               <div class="empty-state">No projects in paid marketing stage.</div>
             }
           </div>
+        }
+
+        <!-- Live Campaigns tab -->
+        @if (activeTab() === 'live') {
+          <div class="live-controls">
+            <select class="adcopy-select" [value]="liveProjectId()" (change)="selectLiveProject($any($event.target).value)" aria-label="Project">
+              <option value="">— Select project —</option>
+              @for (p of projects(); track p.id) { <option [value]="p.id">{{ p.name }}</option> }
+            </select>
+            @if (liveProjectId()) {
+              <button class="ftab" (click)="loadCampaigns(true)" [disabled]="liveLoading()">↻ Refresh</button>
+            }
+          </div>
+
+          @if (!liveProjectId()) {
+            <div class="empty-state">Pick a project to see its live campaigns. Manual budget entry (Budget & Strategy tab) stays available as a fallback.</div>
+          } @else {
+            <!-- Ad account links -->
+            <div class="link-cards">
+              @for (net of networks; track net.value) {
+                <div class="link-card">
+                  <div class="link-head">
+                    <span class="link-name">{{ net.label }}</span>
+                    @if (linkFor(net.value); as link) {
+                      <ui-badge variant="success">Linked</ui-badge>
+                    } @else {
+                      <ui-badge variant="default">Not linked</ui-badge>
+                    }
+                  </div>
+                  @if (linkFor(net.value); as link) {
+                    <span class="link-account">{{ link.externalAccountName || link.externalAccountId }}</span>
+                    <button class="ftab" (click)="unlinkAccount(net.value)">Unlink</button>
+                  } @else if (net.connected) {
+                    <input class="link-input" type="text" [placeholder]="net.placeholder"
+                      [value]="linkDraft()[net.value]" (input)="setLinkDraft(net.value, $any($event.target).value)" />
+                    <button class="btn-generate" (click)="linkAccount(net.value)" [disabled]="!linkDraft()[net.value].trim()">Link account</button>
+                  } @else {
+                    <p class="link-hint">Connect {{ net.label }} in <a routerLink="/app/settings">Settings → Integrations</a> first.</p>
+                  }
+                </div>
+              }
+            </div>
+
+            @if (liveLoading()) {
+              <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Fetching campaigns…</div>
+            } @else if (liveError()) {
+              <div class="adcopy-error" role="alert">{{ liveError() }}</div>
+            }
+
+            @for (block of campaignBlocks(); track block.label) {
+              <h3 class="live-h">{{ block.label }} — last {{ block.data.rangeDays }} days</h3>
+              <div class="kpi-strip">
+                <div class="kpi-card"><div><div class="kpi-val">{{ block.data.totals.spend | number:'1.2-2' }}</div><div class="kpi-lbl">Spend</div></div></div>
+                <div class="kpi-card"><div><div class="kpi-val">{{ block.data.totals.impressions | number }}</div><div class="kpi-lbl">Impressions</div></div></div>
+                <div class="kpi-card"><div><div class="kpi-val">{{ block.data.totals.clicks | number }}</div><div class="kpi-lbl">Clicks</div></div></div>
+                <div class="kpi-card"><div><div class="kpi-val">{{ block.data.totals.conversions | number:'1.0-1' }}</div><div class="kpi-lbl">Conversions</div></div></div>
+              </div>
+              <div class="camp-table">
+                <div class="camp-head"><span>Campaign</span><span>Status</span><span>Spend</span><span>Clicks</span><span>Conv.</span></div>
+                @for (c of block.data.campaigns; track c.id) {
+                  <div class="camp-row">
+                    <span class="camp-name">{{ c.name }}</span>
+                    <span class="camp-status" [attr.data-s]="c.status">{{ c.status }}</span>
+                    <span>{{ c.spend | number:'1.2-2' }}</span>
+                    <span>{{ c.clicks | number }}</span>
+                    <span>{{ c.conversions | number:'1.0-1' }}</span>
+                  </div>
+                } @empty {
+                  <div class="camp-row"><span class="camp-name">No campaigns in this window.</span></div>
+                }
+              </div>
+            }
+          }
         }
 
         <!-- Budget & Strategy tab -->
@@ -199,6 +275,156 @@ interface PaidTask {
                 </div>
               </div>
               <p class="adcopy-hint">Click any line to copy it. {{ copiedLine() ? '✓ Copied!' : '' }}</p>
+            }
+          </section>
+        }
+
+        <!-- ── Ad Creatives tab ── -->
+        @if (activeTab() === 'creatives') {
+          <section aria-label="Ad Creative Library" style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px; display: flex; flex-direction: column; gap: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <div>
+                <h3 style="font-size: 15px; font-weight: 600; color: var(--color-text); margin: 0;">Ad Creative Library</h3>
+                <p style="font-size: 12px; color: var(--color-text-muted); margin: 2px 0 0;">Static images, video ads, carousel assets, and headline/copy combinations.</p>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select class="search-input" style="width: auto;" [value]="selectedCreativeProjectId()" (change)="onCreativeProjectChange($any($event.target).value)">
+                  <option value="">— Select project —</option>
+                  @for (p of projects(); track p.id) {
+                    <option [value]="p.id">{{ p.name }}</option>
+                  }
+                </select>
+                <ui-badge variant="info">{{ adCreatives().length }} Active Creatives</ui-badge>
+              </div>
+            </div>
+
+            <!-- Form to add new creative -->
+            @if (selectedCreativeProjectId()) {
+              <form (submit)="addCreative(); $event.preventDefault()" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; background: var(--color-surface-raised); border: 1.5px dashed var(--color-border); border-radius: 8px;">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 11px; font-weight: 600; color: var(--color-text-muted);">Title</label>
+                  <input type="text" placeholder="Summer Promo V1" [value]="newCreativeTitle()" (input)="newCreativeTitle.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text);" required />
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 11px; font-weight: 600; color: var(--color-text-muted);">Ad Network</label>
+                  <select [value]="newCreativeNetwork()" (change)="newCreativeNetwork.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text);">
+                    <option value="META">Meta Ads</option>
+                    <option value="GOOGLE">Google Ads</option>
+                    <option value="TIKTOK">TikTok Ads</option>
+                  </select>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 11px; font-weight: 600; color: var(--color-text-muted);">Format</label>
+                  <select [value]="newCreativeFormat()" (change)="newCreativeFormat.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text);">
+                    <option value="STATIC_IMAGE">Static Image</option>
+                    <option value="VIDEO">Video</option>
+                    <option value="CAROUSEL">Carousel</option>
+                  </select>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 11px; font-weight: 600; color: var(--color-text-muted);">Headline</label>
+                  <input type="text" placeholder="Unlock 25% Off" [value]="newCreativeHeadline()" (input)="newCreativeHeadline.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text);" />
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 4px; grid-column: 1 / -1;">
+                  <label style="font-size: 11px; font-weight: 600; color: var(--color-text-muted);">Body Copy</label>
+                  <textarea placeholder="Write primary ad text..." rows="2" [value]="newCreativeBody()" (input)="newCreativeBody.set($any($event.target).value)" style="padding: 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-family: var(--font-sans); font-size: 12.5px;"></textarea>
+                </div>
+                <div style="display: flex; align-items: flex-end; justify-content: flex-end; grid-column: 1 / -1;">
+                  <button type="submit" class="btn-primary" style="height: 32px; font-size: 12px; font-weight: 600; width: 120px;">Save Creative</button>
+                </div>
+              </form>
+            }
+
+            @if (creativesLoading()) {
+              <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Loading creatives…</div>
+            } @else {
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+                @for (c of adCreatives(); track c.id) {
+                  <div style="padding: 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px; display: flex; flex-direction: column; gap: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-size: 10px; font-weight: 700; background: #DBEAFE; color: #1E40AF; padding: 2px 6px; border-radius: 4px;">{{ c.network }} ADS</span>
+                      <ui-badge variant="success">{{ c.status }}</ui-badge>
+                    </div>
+                    <h4 style="font-size: 13.5px; font-weight: 600; margin: 0;">{{ c.title }}</h4>
+                    <p style="font-size: 11.5px; color: var(--color-text-muted); margin: 0;">Format: {{ c.format }}</p>
+                    @if (c.headline) {
+                      <p style="font-size: 12px; color: var(--color-text); margin: 4px 0 0; font-weight: 500;">"{{ c.headline }}"</p>
+                    }
+                    @if (c.bodyCopy) {
+                      <p style="font-size: 12px; color: var(--color-text-secondary); margin: 0; line-height: 1.4;">{{ c.bodyCopy }}</p>
+                    }
+                    <div style="display: flex; justify-content: flex-end; margin-top: 6px;">
+                      <button class="btn-mini danger" (click)="deleteCreative(c)" style="height: 26px; font-size: 11px;">Delete</button>
+                    </div>
+                  </div>
+                } @empty {
+                  <div class="empty-state" style="grid-column: 1 / -1;">No creatives recorded yet. Select a project and add creatives above.</div>
+                }
+              </div>
+            }
+          </section>
+        }
+
+        <!-- ── Conversion Tracking Log tab ── -->
+        @if (activeTab() === 'conversions') {
+          <section aria-label="Conversion Tracking Log" style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <div>
+                <h3 style="font-size: 15px; font-weight: 600; color: var(--color-text); margin: 0;">Conversion Tracking Log</h3>
+                <p style="font-size: 12px; color: var(--color-text-muted); margin: 2px 0 0;">Audit GTM tags, Meta Pixel events, Google Ads conversion actions, and TikTok Pixel firing status.</p>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select class="search-input" style="width: auto;" [value]="selectedConversionProjectId()" (change)="onConversionProjectChange($any($event.target).value)">
+                  <option value="">— Select project —</option>
+                  @for (p of projects(); track p.id) {
+                    <option [value]="p.id">{{ p.name }}</option>
+                  }
+                </select>
+                <ui-badge variant="success">All Systems Operational</ui-badge>
+              </div>
+            </div>
+
+            <!-- Form to add conversion event -->
+            @if (selectedConversionProjectId()) {
+              <form (submit)="addConversion(); $event.preventDefault()" style="display: grid; grid-template-columns: repeat(4, 1fr) 100px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1.5px dashed var(--color-border); border-radius: 8px;">
+                <input type="text" placeholder="Event Name (e.g. Lead Form Submit)" [value]="newConversionName()" (input)="newConversionName.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <select [value]="newConversionPlatform()" (change)="newConversionPlatform.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;">
+                  <option value="GTM">Google Tag Manager</option>
+                  <option value="META">Meta Pixel</option>
+                  <option value="GOOGLE">Google Ads</option>
+                  <option value="TIKTOK">TikTok Pixel</option>
+                </select>
+                <input type="text" placeholder="Trigger URL/Element (e.g. /thank-you)" [value]="newConversionUrl()" (input)="newConversionUrl.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="number" placeholder="Firing Rate %" [value]="newConversionRate()" (input)="newConversionRate.set($any($event.target).valueAsNumber)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" min="0" max="100" required />
+                <button type="submit" class="btn-primary" style="height: 30px; font-size: 11.5px; font-weight: 600;">Add</button>
+              </form>
+            }
+
+            @if (conversionsLoading()) {
+              <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Loading log…</div>
+            } @else {
+              <div style="display: grid; grid-template-columns: 180px 120px 1fr 100px 110px 60px; gap: 10px; padding: 0 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted);">
+                <span>Event Name</span><span>Platform</span><span>Trigger URL / Element</span><span>Firing Rate</span><span>Status</span><span></span>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                @for (event of conversionEvents(); track event.id) {
+                  <div style="display: grid; grid-template-columns: 180px 120px 1fr 100px 110px 60px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px;">
+                    <span style="font-size: 13px; font-weight: 600; color: var(--color-text);">{{ event.eventName }}</span>
+                    <span style="font-size: 12px; font-weight: 500;">{{ event.platform }}</span>
+                    <span style="font-size: 12px; color: var(--color-text-muted); font-family: monospace;">{{ event.triggerUrl }}</span>
+                    <span style="font-size: 12.5px; font-weight: 600; color: #059669;">{{ event.firingRate }}%</span>
+                    <select [value]="event.status" (change)="updateConversionStatus(event, $any($event.target).value)" style="height: 26px; padding: 0 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 11px;">
+                      <option value="FIRING">Firing</option>
+                      <option value="PAUSED">Paused</option>
+                      <option value="ERROR">Error</option>
+                    </select>
+                    <button class="btn-mini danger" (click)="deleteConversion(event)" style="height: 26px; font-size: 11px;">Delete</button>
+                  </div>
+                } @empty {
+                  <div class="empty-state">No events configured yet. Select a project and log conversion tracking actions above.</div>
+                }
+              </div>
             }
           </section>
         }
@@ -345,6 +571,29 @@ interface PaidTask {
     .task-status[data-s="DONE"] { background: #ECFDF5; color: #059669; }
     .task-status[data-s="IN_PROGRESS"] { background: #EFF6FF; color: #2563EB; }
     .task-status[data-s="IN_REVIEW"] { background: #FEF3C7; color: #D97706; }
+
+    /* Live campaigns */
+    .live-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .live-h { font-size: 14px; font-weight: 600; color: var(--color-text); margin: 8px 0 0; }
+    .link-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .link-cards { grid-template-columns: 1fr; } }
+    .link-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+    .link-head { display: flex; align-items: center; justify-content: space-between; }
+    .link-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
+    .link-account { font-size: 12.5px; color: var(--color-text-secondary); }
+    .link-input { height: 32px; padding: 0 10px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: 12.5px; color: var(--color-text); background: var(--color-surface); outline: none; }
+    .link-input:focus { border-color: #EF4444; }
+    .link-hint { font-size: 12px; color: var(--color-text-muted); margin: 0; }
+    .link-hint a { color: #EF4444; }
+    .camp-table { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
+    .camp-head, .camp-row { display: grid; grid-template-columns: 1fr 90px 90px 80px 70px; gap: 10px; padding: 8px 14px; align-items: center; }
+    .camp-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); border-bottom: 1px solid var(--color-border); }
+    .camp-row { font-size: 12.5px; color: var(--color-text); border-bottom: 1px solid var(--color-border); }
+    .camp-row:last-child { border-bottom: none; }
+    .camp-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+    .camp-status { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: var(--color-surface-raised); color: var(--color-text-muted); text-align: center; }
+    .camp-status[data-s="ENABLED"], .camp-status[data-s="ACTIVE"] { background: #ECFDF5; color: #059669; }
+    .camp-status[data-s="PAUSED"] { background: #FEF3C7; color: #D97706; }
   `]
 })
 export class PaidDept implements OnInit {
@@ -356,12 +605,135 @@ export class PaidDept implements OnInit {
   protected projects    = signal<PaidProject[]>([]);
   protected allTasks    = signal<PaidTask[]>([]);
 
+  // Real creative signals
+  protected selectedCreativeProjectId = signal<string>('');
+  protected adCreatives = signal<any[]>([]);
+  protected creativesLoading = signal(false);
+  protected newCreativeTitle = signal('');
+  protected newCreativeFormat = signal<'STATIC_IMAGE' | 'VIDEO' | 'CAROUSEL'>('STATIC_IMAGE');
+  protected newCreativeNetwork = signal<'META' | 'GOOGLE'>('META');
+  protected newCreativeHeadline = signal('');
+  protected newCreativeBody = signal('');
+  protected newCreativeAdSet = signal('All Audiences');
+  protected newCreativeMediaUrl = signal('');
+
+  // Real conversion events signals
+  protected selectedConversionProjectId = signal<string>('');
+  protected conversionEvents = signal<any[]>([]);
+  protected conversionsLoading = signal(false);
+  protected newConversionName = signal('');
+  protected newConversionPlatform = signal<'GTM' | 'META' | 'GOOGLE' | 'TIKTOK'>('GTM');
+  protected newConversionUrl = signal('');
+  protected newConversionRate = signal(100);
+  protected newConversionStatus = signal<'FIRING' | 'PAUSED' | 'ERROR'>('FIRING');
+
   readonly tabs = [
-    { id: 'projects' as TabId, label: 'Projects',            count: computed(() => this.projects().length) },
-    { id: 'budget'   as TabId, label: 'Budget & Strategy',   count: computed(() => this.projects().filter(p => !!p.budget).length) },
-    { id: 'adcopy'   as TabId, label: 'Ad Copy',             count: computed(() => 0) },
-    { id: 'tasks'    as TabId, label: 'Tasks',               count: computed(() => this.allTasks().length) },
+    { id: 'projects'    as TabId, label: 'Projects',            count: computed(() => this.projects().length) },
+    { id: 'live'        as TabId, label: 'Live Campaigns',      count: computed(() => 0) },
+    { id: 'budget'      as TabId, label: 'Budgets & Strategy',  count: computed(() => 0) },
+    { id: 'adcopy'      as TabId, label: 'Ad Copy AI',          count: computed(() => 0) },
+    { id: 'creatives'   as TabId, label: 'Ad Creatives',        count: computed(() => this.adCreatives().length) },
+    { id: 'conversions' as TabId, label: 'Conversion Log',      count: computed(() => this.conversionEvents().length) },
+    { id: 'tasks'       as TabId, label: 'Tasks',               count: computed(() => this.allTasks().length) },
   ];
+
+  // ── Live campaigns ─────────────────────────────────────────────────────────
+  private integrationService = inject(IntegrationService);
+  protected googleAdsConnected = signal(false);
+  protected metaConnected      = signal(false);
+  protected liveProjectId = signal('');
+  protected liveLoading   = signal(false);
+  protected liveError     = signal('');
+  protected adLinks       = signal<AdAccountLink[]>([]);
+  protected googleData    = signal<AdAccountSummary | null>(null);
+  protected metaData      = signal<AdAccountSummary | null>(null);
+  protected linkDraft     = signal<Record<AdNetwork, string>>({ GOOGLE: '', META: '' });
+
+  protected get networks() {
+    return [
+      { value: 'GOOGLE' as AdNetwork, label: 'Google Ads', connected: this.googleAdsConnected(), placeholder: 'Customer ID, e.g. 123-456-7890' },
+      { value: 'META'   as AdNetwork, label: 'Meta Ads',   connected: this.metaConnected(),      placeholder: 'Ad account ID, e.g. act_1234567890' },
+    ];
+  }
+
+  protected campaignBlocks = computed(() => {
+    const blocks: Array<{ label: string; data: AdAccountSummary }> = [];
+    const g = this.googleData();
+    const m = this.metaData();
+    if (g) blocks.push({ label: 'Google Ads', data: g });
+    if (m) blocks.push({ label: 'Meta Ads', data: m });
+    return blocks;
+  });
+
+  protected linkFor(network: AdNetwork): AdAccountLink | undefined {
+    return this.adLinks().find(l => l.network === network);
+  }
+
+  protected setLinkDraft(network: AdNetwork, value: string) {
+    this.linkDraft.update(d => ({ ...d, [network]: value }));
+  }
+
+  protected selectLiveProject(id: string) {
+    this.liveProjectId.set(id);
+    this.googleData.set(null); this.metaData.set(null);
+    this.adLinks.set([]); this.liveError.set('');
+    if (!id) return;
+    this.projectService.getAdAccountLinks(id).subscribe({
+      next: (res) => { this.adLinks.set(res.links); if (res.links.length) this.loadCampaigns(false); },
+      error: () => {},
+    });
+  }
+
+  protected linkAccount(network: AdNetwork) {
+    const id = this.liveProjectId();
+    const accountId = this.linkDraft()[network].trim();
+    if (!id || !accountId) return;
+    this.projectService.saveAdAccountLink(id, { network, externalAccountId: accountId }).subscribe({
+      next: (res) => {
+        this.adLinks.update(links => [...links.filter(l => l.network !== network), res.link]);
+        this.setLinkDraft(network, '');
+        this.loadCampaigns(false);
+      },
+      error: (err) => this.liveError.set(err?.error?.error ?? 'Could not link the ad account.'),
+    });
+  }
+
+  protected unlinkAccount(network: AdNetwork) {
+    const id = this.liveProjectId();
+    if (!id) return;
+    this.projectService.deleteAdAccountLink(id, network).subscribe({
+      next: () => {
+        this.adLinks.update(links => links.filter(l => l.network !== network));
+        if (network === 'GOOGLE') this.googleData.set(null); else this.metaData.set(null);
+      },
+      error: () => {},
+    });
+  }
+
+  protected loadCampaigns(refresh: boolean) {
+    const id = this.liveProjectId();
+    if (!id) return;
+    this.liveError.set('');
+    this.liveLoading.set(true);
+    let pending = 0;
+    const done = () => { if (--pending === 0) this.liveLoading.set(false); };
+
+    if (this.linkFor('GOOGLE')) {
+      pending++;
+      this.projectService.getGoogleAdsCampaigns(id, 30, refresh).subscribe({
+        next: (env) => { this.googleData.set(env.data); done(); },
+        error: (err) => { this.liveError.set(err?.error?.error ?? 'Google Ads request failed.'); done(); },
+      });
+    }
+    if (this.linkFor('META')) {
+      pending++;
+      this.projectService.getMetaAdsCampaigns(id, 30, refresh).subscribe({
+        next: (env) => { this.metaData.set(env.data); done(); },
+        error: (err) => { this.liveError.set(err?.error?.error ?? 'Meta Ads request failed.'); done(); },
+      });
+    }
+    if (pending === 0) this.liveLoading.set(false);
+  }
 
   // AI ad copy
   protected adProjectId    = signal('');
@@ -427,6 +799,13 @@ export class PaidDept implements OnInit {
   });
 
   ngOnInit() {
+    this.integrationService.getIntegrations().subscribe({
+      next: (res) => {
+        this.googleAdsConnected.set(res.integrations.some(i => i.provider === 'GOOGLE_ADS' && i.status === 'CONNECTED'));
+        this.metaConnected.set(res.integrations.some(i => i.provider === 'META' && i.status === 'CONNECTED'));
+      },
+      error: () => {},
+    });
     this.projectService.getProjects().subscribe({
       next: (projects) => {
         const active = projects.filter(p => p.currentStage === 'MARKETING' || !!p.marketing);
@@ -439,6 +818,12 @@ export class PaidDept implements OnInit {
         }
         this.allTasks.set(tasks);
         this.loading.set(false);
+
+        if (active.length > 0) {
+          const firstId = active[0].id;
+          this.onCreativeProjectChange(firstId);
+          this.onConversionProjectChange(firstId);
+        }
       },
       error: () => this.loading.set(false),
     });
@@ -470,5 +855,102 @@ export class PaidDept implements OnInit {
     if (s === 'IN_PROGRESS') return 'In Progress';
     if (s === 'IN_REVIEW') return 'In Review';
     return s.charAt(0) + s.slice(1).toLowerCase();
+  }
+
+  protected onCreativeProjectChange(projectId: string) {
+    this.selectedCreativeProjectId.set(projectId);
+    if (!projectId) {
+      this.adCreatives.set([]);
+      return;
+    }
+    this.creativesLoading.set(true);
+    this.projectService.getAdCreatives(projectId).subscribe({
+      next: (res: any) => {
+        this.adCreatives.set(res);
+        this.creativesLoading.set(false);
+      },
+      error: () => this.creativesLoading.set(false),
+    });
+  }
+
+  protected addCreative() {
+    const id = this.selectedCreativeProjectId();
+    if (!id || !this.newCreativeTitle().trim()) return;
+    this.projectService.createAdCreative(id, {
+      title: this.newCreativeTitle().trim(),
+      network: this.newCreativeNetwork(),
+      format: this.newCreativeFormat(),
+      headline: this.newCreativeHeadline().trim() || undefined,
+      bodyCopy: this.newCreativeBody().trim() || undefined,
+      status: 'ACTIVE'
+    }).subscribe({
+      next: (creative) => {
+        this.adCreatives.update(list => [creative, ...list]);
+        this.newCreativeTitle.set('');
+        this.newCreativeHeadline.set('');
+        this.newCreativeBody.set('');
+      }
+    });
+  }
+
+  protected deleteCreative(c: any) {
+    this.projectService.deleteAdCreative(this.selectedCreativeProjectId(), c.id).subscribe({
+      next: () => {
+        this.adCreatives.update(list => list.filter(x => x.id !== c.id));
+      }
+    });
+  }
+
+  protected onConversionProjectChange(projectId: string) {
+    this.selectedConversionProjectId.set(projectId);
+    if (!projectId) {
+      this.conversionEvents.set([]);
+      return;
+    }
+    this.conversionsLoading.set(true);
+    this.projectService.getConversionEvents(projectId).subscribe({
+      next: (res: any) => {
+        this.conversionEvents.set(res);
+        this.conversionsLoading.set(false);
+      },
+      error: () => this.conversionsLoading.set(false),
+    });
+  }
+
+  protected addConversion() {
+    const id = this.selectedConversionProjectId();
+    if (!id || !this.newConversionName().trim()) return;
+    this.projectService.createConversionEvent(id, {
+      eventName: this.newConversionName().trim(),
+      platform: this.newConversionPlatform(),
+      triggerUrl: this.newConversionUrl().trim(),
+      firingRate: this.newConversionRate(),
+      status: 'FIRING'
+    }).subscribe({
+      next: (event) => {
+        this.conversionEvents.update(list => [event, ...list]);
+        this.newConversionName.set('');
+        this.newConversionUrl.set('');
+        this.newConversionRate.set(100);
+      }
+    });
+  }
+
+  protected updateConversionStatus(event: any, newStatus: 'FIRING' | 'NOT_FIRING' | 'UNVERIFIED' | 'UNDER_REVIEW') {
+    this.projectService.updateConversionEvent(this.selectedConversionProjectId(), event.id, {
+      status: newStatus
+    }).subscribe({
+      next: (updated) => {
+        this.conversionEvents.update(list => list.map(x => x.id === updated.id ? updated : x));
+      }
+    });
+  }
+
+  protected deleteConversion(event: any) {
+    this.projectService.deleteConversionEvent(this.selectedConversionProjectId(), event.id).subscribe({
+      next: () => {
+        this.conversionEvents.update(list => list.filter(x => x.id !== event.id));
+      }
+    });
   }
 }

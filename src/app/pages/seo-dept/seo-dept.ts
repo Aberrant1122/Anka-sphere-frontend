@@ -1,10 +1,12 @@
 import { Component, signal, computed, inject, OnInit } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { Badge } from '../../ui';
 import { ProjectService } from '../../services/project.service';
-import { Project } from '../../models/project.models';
+import { IntegrationService } from '../../services/integration.service';
+import { Project, GscMetrics } from '../../models/project.models';
 
-type TabId = 'projects' | 'keywords' | 'onpage' | 'tasks';
+type TabId = 'projects' | 'keywords' | 'onpage' | 'backlinks' | 'rank_tracker' | 'tasks';
 
 interface SeoProject {
   id: string;
@@ -62,7 +64,7 @@ function splitKw(raw?: string): string[] {
 
 @Component({
   selector: 'app-seo-dept',
-  imports: [RouterLink, Badge],
+  imports: [RouterLink, Badge, DecimalPipe],
   template: `
     <div class="seo-page">
 
@@ -202,6 +204,46 @@ function splitKw(raw?: string): string[] {
         @if (activeTab() === 'keywords') {
           <div class="kw-board">
 
+            <!-- Live GSC queries -->
+            <div class="gsc-live">
+              <div class="gsc-live-head">
+                <span class="gsc-live-title">Live Search Console queries</span>
+                @if (googleConnected()) {
+                  <select class="gsc-select" [value]="gscProjectId()" (change)="selectGscProject($any($event.target).value)" aria-label="Project">
+                    <option value="">Select a project…</option>
+                    @for (p of gscProjects(); track p.id) {
+                      <option [value]="p.id">{{ p.name }}</option>
+                    }
+                  </select>
+                }
+              </div>
+              @if (!googleConnected()) {
+                <p class="gsc-live-hint">Connect Google in <a routerLink="/app/settings">Settings → Integrations</a> to see real queries next to the keyword board.</p>
+              } @else if (gscLoading()) {
+                <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Fetching queries…</div>
+              } @else if (gscError()) {
+                <p class="gsc-live-hint">{{ gscError() }}</p>
+              } @else if (gscData(); as s) {
+                <div class="gsc-totals">
+                  <span><strong>{{ s.clicks | number }}</strong> clicks</span>
+                  <span><strong>{{ s.impressions | number }}</strong> impressions</span>
+                  <span><strong>{{ s.avgPosition | number:'1.0-1' }}</strong> avg position</span>
+                  <span class="gsc-range">last {{ s.rangeDays }}d</span>
+                </div>
+                <div class="gsc-queries">
+                  @for (q of s.topQueries; track q.query) {
+                    <span class="gsc-q" [title]="q.clicks + ' clicks · pos ' + (q.position | number:'1.0-1')">
+                      {{ q.query }} <strong>{{ q.clicks }}</strong>
+                    </span>
+                  } @empty {
+                    <p class="gsc-live-hint">No query data in this window yet.</p>
+                  }
+                </div>
+              } @else if (gscProjectId()) {
+                <p class="gsc-live-hint">No data loaded.</p>
+              }
+            </div>
+
             <!-- Filter row -->
             <div class="kw-filter-row">
               <div class="kw-filter-btns" role="group" aria-label="Keyword type filter">
@@ -313,6 +355,117 @@ function splitKw(raw?: string): string[] {
               </div>
             }
           </div>
+        }
+
+        <!-- ── Tab: Backlink Tracker ── -->
+        @if (activeTab() === 'backlinks') {
+          <section aria-label="Backlink Tracker" style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <div>
+                <h3 style="font-size: 15px; font-weight: 600; color: var(--color-text); margin: 0;">Backlink Tracker</h3>
+                <p style="font-size: 12px; color: var(--color-text-muted); margin: 2px 0 0;">Log & track acquired backlinks, anchor text, domain authority (DA/DR), and link status.</p>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select class="search-input" style="width: auto;" [value]="selectedBacklinkProjectId()" (change)="onBacklinkProjectChange($any($event.target).value)">
+                  <option value="">— Select project —</option>
+                  @for (p of projects(); track p.id) {
+                    <option [value]="p.id">{{ p.name }}</option>
+                  }
+                </select>
+                <ui-badge variant="success">{{ backlinks().length }} Live Backlinks</ui-badge>
+              </div>
+            </div>
+
+            <!-- Form to add new backlink -->
+            @if (selectedBacklinkProjectId()) {
+              <form (submit)="addBacklink(); $event.preventDefault()" style="display: grid; grid-template-columns: repeat(4, 1fr) 100px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1.5px dashed var(--color-border); border-radius: 8px;">
+                <input type="text" placeholder="Source Domain (e.g. techcrunch.com)" [value]="newBacklinkSource()" (input)="newBacklinkSource.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="text" placeholder="Target Page (e.g. /services)" [value]="newBacklinkTarget()" (input)="newBacklinkTarget.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="text" placeholder="Anchor Text (e.g. best agency)" [value]="newBacklinkAnchor()" (input)="newBacklinkAnchor.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="number" placeholder="DA Score" [value]="newBacklinkDa()" (input)="newBacklinkDa.set($any($event.target).valueAsNumber)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" min="1" max="100" required />
+                <button type="submit" class="btn-primary" style="height: 30px; font-size: 11.5px; font-weight: 600;">Add</button>
+              </form>
+            }
+
+            @if (backlinksLoading()) {
+              <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Loading backlinks…</div>
+            } @else {
+              <div style="display: grid; grid-template-columns: 180px 140px 1fr 90px 100px 60px; gap: 10px; padding: 0 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted);">
+                <span>Source Domain</span><span>Target Page</span><span>Anchor Text</span><span>DA Score</span><span>Status</span><span></span>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                @for (link of backlinks(); track link.id) {
+                  <div style="display: grid; grid-template-columns: 180px 140px 1fr 90px 100px 60px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px;">
+                    <span style="font-size: 13px; font-weight: 600; color: #10B981;">{{ link.sourceDomain }}</span>
+                    <span style="font-size: 12px; color: var(--color-text-muted); font-family: monospace;">{{ link.targetPage }}</span>
+                    <span style="font-size: 12.5px;">"{{ link.anchorText }}"</span>
+                    <span style="font-size: 13px; font-weight: 700;">{{ link.daScore }}</span>
+                    <ui-badge variant="success">{{ link.status }}</ui-badge>
+                    <button class="btn-mini danger" (click)="deleteBacklink(link)" style="height: 26px; font-size: 11px;">Delete</button>
+                  </div>
+                } @empty {
+                  <div class="empty-state">No backlinks recorded yet. Select a project and add link building actions above.</div>
+                }
+              </div>
+            }
+          </section>
+        }
+
+        <!-- ── Tab: Rank Tracker ── -->
+        @if (activeTab() === 'rank_tracker') {
+          <section aria-label="Keyword Rank Tracker" style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <div>
+                <h3 style="font-size: 15px; font-weight: 600; color: var(--color-text); margin: 0;">Keyword Rank Tracker</h3>
+                <p style="font-size: 12px; color: var(--color-text-muted); margin: 2px 0 0;">Track weekly keyword ranking positions, movement (up/down), and cluster breakdown.</p>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select class="search-input" style="width: auto;" [value]="selectedRankProjectId()" (change)="onRankProjectChange($any($event.target).value)">
+                  <option value="">— Select project —</option>
+                  @for (p of projects(); track p.id) {
+                    <option [value]="p.id">{{ p.name }}</option>
+                  }
+                </select>
+                <ui-badge variant="success">Avg Position #{{ getAvgRank() }}</ui-badge>
+              </div>
+            </div>
+
+            <!-- Form to add rank log -->
+            @if (selectedRankProjectId()) {
+              <form (submit)="addRankLog(); $event.preventDefault()" style="display: grid; grid-template-columns: 2fr 1.5fr 1fr 1fr 100px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1.5px dashed var(--color-border); border-radius: 8px;">
+                <input type="text" placeholder="Keyword (e.g. digital dashboard)" [value]="newRankKeyword()" (input)="newRankKeyword.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="text" placeholder="Cluster Name" [value]="newRankCluster()" (input)="newRankCluster.set($any($event.target).value)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" required />
+                <input type="number" placeholder="Position" [value]="newRankPosition()" (input)="newRankPosition.set($any($event.target).valueAsNumber)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" min="1" required />
+                <input type="number" placeholder="Prev Pos" [value]="newRankPrevious()" (input)="newRankPrevious.set($any($event.target).valueAsNumber)" style="height: 30px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); color: var(--color-text); font-size: 12.5px;" min="1" required />
+                <button type="submit" class="btn-primary" style="height: 30px; font-size: 11.5px; font-weight: 600;">Log Rank</button>
+              </form>
+            }
+
+            @if (rankLoading()) {
+              <div class="loading-state" role="status"><div class="spinner" aria-hidden="true"></div>Loading ranks…</div>
+            } @else {
+              <div style="display: grid; grid-template-columns: 1fr 160px 100px 100px 110px; gap: 10px; padding: 0 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-muted);">
+                <span>Keyword</span><span>Topic Cluster</span><span>Position</span><span>Previous</span><span>Movement</span>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                @for (log of rankLogs(); track log.id) {
+                  <div style="display: grid; grid-template-columns: 1fr 160px 100px 100px 110px; gap: 10px; align-items: center; padding: 10px 14px; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px;">
+                    <span style="font-size: 13px; font-weight: 600;">"{{ log.keyword }}"</span>
+                    <span style="font-size: 12px; color: var(--color-text-muted);">{{ log.clusterName }}</span>
+                    <span style="font-size: 14px; font-weight: 700; color: #10B981;">#{{ log.position }}</span>
+                    <span style="font-size: 13px; color: var(--color-text-muted);">#{{ log.previousPos }}</span>
+                    <span style="font-size: 12px; font-weight: 700;" [style.color]="getMovementColor(log.position, log.previousPos)">
+                      {{ getMovementLabel(log.position, log.previousPos) }}
+                    </span>
+                  </div>
+                } @empty {
+                  <div class="empty-state">No keyword ranks logged yet. Select a project and log rank checks above.</div>
+                }
+              </div>
+            }
+          </section>
         }
 
         <!-- ── Tab: SEO Tasks ── -->
@@ -429,6 +582,16 @@ function splitKw(raw?: string): string[] {
 
     /* Keyword Board */
     .kw-board { display: flex; flex-direction: column; gap: 12px; }
+    .gsc-live { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .gsc-live-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .gsc-live-title { font-size: 13px; font-weight: 600; color: var(--color-text); }
+    .gsc-select { height: 30px; padding: 0 8px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); font-family: var(--font-sans); font-size: 12.5px; color: var(--color-text); background: var(--color-surface); }
+    .gsc-live-hint { font-size: 12.5px; color: var(--color-text-muted); margin: 0; }
+    .gsc-live-hint a { color: #10B981; }
+    .gsc-totals { display: flex; gap: 16px; font-size: 12.5px; color: var(--color-text-secondary); align-items: center; }
+    .gsc-range { margin-left: auto; font-size: 11px; color: var(--color-text-muted); }
+    .gsc-queries { display: flex; flex-wrap: wrap; gap: 6px; }
+    .gsc-q { font-size: 12px; padding: 4px 10px; border-radius: 14px; background: #ECFDF5; color: #059669; border: 1px solid #A7F3D0; }
     .kw-project-group { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
     .kw-group-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--color-surface-raised); border-bottom: 1px solid var(--color-border); }
     .kw-group-name { font-size: 13.5px; font-weight: 600; color: var(--color-text); }
@@ -490,11 +653,31 @@ export class SeoDept implements OnInit {
   protected allPages    = signal<OnPageRow[]>([]);
   protected allTasks    = signal<SeoTask[]>([]);
 
+  // Real backlinks signals
+  protected selectedBacklinkProjectId = signal<string>('');
+  protected backlinks = signal<any[]>([]);
+  protected backlinksLoading = signal(false);
+  protected newBacklinkSource = signal('');
+  protected newBacklinkTarget = signal('/services');
+  protected newBacklinkAnchor = signal('');
+  protected newBacklinkDa = signal(45);
+
+  // Real rank tracker signals
+  protected selectedRankProjectId = signal<string>('');
+  protected rankLogs = signal<any[]>([]);
+  protected rankLoading = signal(false);
+  protected newRankKeyword = signal('');
+  protected newRankPosition = signal(3);
+  protected newRankPrevious = signal(5);
+  protected newRankCluster = signal('Core Services');
+
   readonly tabs = [
-    { id: 'projects'  as TabId, label: 'Projects',        count: computed(() => this.projects().length) },
-    { id: 'keywords'  as TabId, label: 'Keyword Board',   count: computed(() => this.allKeywords().length) },
-    { id: 'onpage'    as TabId, label: 'On-Page SEO',     count: computed(() => this.allPages().length) },
-    { id: 'tasks'     as TabId, label: 'SEO Tasks',       count: computed(() => this.allTasks().length) },
+    { id: 'projects'     as TabId, label: 'Projects',        count: computed(() => this.projects().length) },
+    { id: 'keywords'     as TabId, label: 'Keyword Board',   count: computed(() => this.allKeywords().length) },
+    { id: 'onpage'       as TabId, label: 'On-Page SEO',     count: computed(() => this.allPages().length) },
+    { id: 'backlinks'    as TabId, label: 'Backlinks',       count: computed(() => this.backlinks().length) },
+    { id: 'rank_tracker' as TabId, label: 'Rank Tracker',    count: computed(() => this.rankLogs().length) },
+    { id: 'tasks'        as TabId, label: 'SEO Tasks',       count: computed(() => this.allTasks().length) },
   ];
 
   readonly kwFilters = [
@@ -613,6 +796,12 @@ export class SeoDept implements OnInit {
   });
 
   ngOnInit() {
+    this.integrationService.getIntegrations().subscribe({
+      next: (res) => this.googleConnected.set(
+        res.integrations.some(i => i.provider === 'GOOGLE_SEARCH_CONSOLE' && i.status === 'CONNECTED'),
+      ),
+      error: () => this.googleConnected.set(false),
+    });
     this.projectService.getProjects().subscribe({
       next: (projects) => {
         const seoProjects = projects.filter(p => p.currentStage === 'MARKETING' || !!p.marketing);
@@ -657,6 +846,12 @@ export class SeoDept implements OnInit {
         this.allPages.set(pages);
         this.allTasks.set(tasks);
         this.loading.set(false);
+
+        if (seoProjects.length > 0) {
+          const firstId = seoProjects[0].id;
+          this.onBacklinkProjectChange(firstId);
+          this.onRankProjectChange(firstId);
+        }
       },
       error: () => this.loading.set(false),
     });
@@ -686,6 +881,31 @@ export class SeoDept implements OnInit {
 
   protected readonly GSC_CREATE_URL = GSC_CREATE_URL;
 
+  // ── Live GSC queries ────────────────────────────────────────────────────
+  private integrationService = inject(IntegrationService);
+  protected googleConnected = signal(false);
+  protected gscProjectId    = signal('');
+  protected gscLoading      = signal(false);
+  protected gscError        = signal('');
+  protected gscData         = signal<GscMetrics | null>(null);
+
+  protected gscProjects = computed(() => this.projects().filter(p => p.searchConsoleUrl));
+
+  protected selectGscProject(id: string) {
+    this.gscProjectId.set(id);
+    this.gscData.set(null);
+    this.gscError.set('');
+    if (!id) return;
+    this.gscLoading.set(true);
+    this.projectService.getGscMetrics(id, 30).subscribe({
+      next: (env) => { this.gscData.set(env.data); this.gscLoading.set(false); },
+      error: (err) => {
+        this.gscError.set(err?.error?.error ?? 'Search Console request failed.');
+        this.gscLoading.set(false);
+      },
+    });
+  }
+
   /** Deep-link to the live Search Console property (falls back to setup when absent). */
   protected gscLink(url?: string): string {
     return url ? `https://search.google.com/search-console?resource_id=${encodeURIComponent(url)}` : GSC_CREATE_URL;
@@ -703,5 +923,98 @@ export class SeoDept implements OnInit {
     if (s === 'IN_PROGRESS') return 'In Progress';
     if (s === 'IN_REVIEW') return 'In Review';
     return s.charAt(0) + s.slice(1).toLowerCase();
+  }
+
+  protected onBacklinkProjectChange(projectId: string) {
+    this.selectedBacklinkProjectId.set(projectId);
+    if (!projectId) {
+      this.backlinks.set([]);
+      return;
+    }
+    this.backlinksLoading.set(true);
+    this.projectService.getBacklinks(projectId).subscribe({
+      next: (res: any) => {
+        this.backlinks.set(res);
+        this.backlinksLoading.set(false);
+      },
+      error: () => this.backlinksLoading.set(false),
+    });
+  }
+
+  protected addBacklink() {
+    const id = this.selectedBacklinkProjectId();
+    if (!id || !this.newBacklinkSource().trim()) return;
+    this.projectService.createBacklink(id, {
+      sourceDomain: this.newBacklinkSource().trim(),
+      targetPage: this.newBacklinkTarget().trim(),
+      anchorText: this.newBacklinkAnchor().trim(),
+      daScore: this.newBacklinkDa(),
+      status: 'LIVE'
+    }).subscribe({
+      next: (link) => {
+        this.backlinks.update(list => [link, ...list]);
+        this.newBacklinkSource.set('');
+        this.newBacklinkAnchor.set('');
+      }
+    });
+  }
+
+  protected deleteBacklink(link: any) {
+    this.projectService.deleteBacklink(this.selectedBacklinkProjectId(), link.id).subscribe({
+      next: () => {
+        this.backlinks.update(list => list.filter(x => x.id !== link.id));
+      }
+    });
+  }
+
+  protected onRankProjectChange(projectId: string) {
+    this.selectedRankProjectId.set(projectId);
+    if (!projectId) {
+      this.rankLogs.set([]);
+      return;
+    }
+    this.rankLoading.set(true);
+    this.projectService.getKeywordRankLogs(projectId).subscribe({
+      next: (res: any) => {
+        this.rankLogs.set(res);
+        this.rankLoading.set(false);
+      },
+      error: () => this.rankLoading.set(false),
+    });
+  }
+
+  protected addRankLog() {
+    const id = this.selectedRankProjectId();
+    if (!id || !this.newRankKeyword().trim()) return;
+    this.projectService.createKeywordRankLog(id, {
+      keyword: this.newRankKeyword().trim(),
+      clusterName: this.newRankCluster().trim(),
+      position: this.newRankPosition(),
+      previousPos: this.newRankPrevious()
+    }).subscribe({
+      next: (log) => {
+        this.rankLogs.update(list => [log, ...list]);
+        this.newRankKeyword.set('');
+      }
+    });
+  }
+
+  protected getAvgRank(): string {
+    const logs = this.rankLogs();
+    if (logs.length === 0) return '—';
+    const sum = logs.reduce((acc, log) => acc + log.position, 0);
+    return (sum / logs.length).toFixed(1);
+  }
+
+  protected getMovementColor(pos: number, prev: number): string {
+    if (pos < prev) return '#059669'; // Green (Up)
+    if (pos > prev) return '#DC2626'; // Red (Down)
+    return 'var(--color-text-muted)'; // Grey (No Change)
+  }
+
+  protected getMovementLabel(pos: number, prev: number): string {
+    if (pos < prev) return `▲ +${prev - pos} Pos`;
+    if (pos > prev) return `▼ -${pos - prev} Pos`;
+    return '= No Change';
   }
 }

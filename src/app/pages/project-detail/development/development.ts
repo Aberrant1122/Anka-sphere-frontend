@@ -280,7 +280,7 @@ const QUEUE_STATUS_ORDER: QueueItemStatus[] = ['QUEUED', 'IN_PROGRESS', 'IN_QA',
                       @if (asset.notes) { <span class="asset-notes">{{ asset.notes }}</span> }
                       @if (asset.approvedAt) { <span class="asset-approved">Approved {{ formatDate(asset.approvedAt) }}</span> }
                     </div>
-                    <a [href]="asset.url" target="_blank" rel="noopener noreferrer" class="asset-link" [attr.aria-label]="'Open ' + asset.name">
+                    <a [href]="asset.url" target="_blank" rel="noopener noreferrer" class="asset-link" [attr.aria-label]="'Open ' + asset.name" (click)="openAsset(asset, $event)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                     </a>
                   </div>
@@ -296,9 +296,13 @@ const QUEUE_STATUS_ORDER: QueueItemStatus[] = ['QUEUED', 'IN_PROGRESS', 'IN_QA',
             <div class="shared-header">
               <div>
                 <h4 class="shared-title">Approved Content</h4>
-                <p class="shared-sub">Approved pages from the Written Content stage — read-only</p>
+                <p class="shared-sub">Approved pages from the Written Content stage — strict read-only mode</p>
               </div>
               <span class="shared-badge">{{ approvedPages().length }} approved</span>
+            </div>
+            <div class="read-only-banner" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; font-size: 12.5px; color: #1E40AF; margin-bottom: 16px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span><strong>Strict Read-Only:</strong> Approved written content is locked for deployment. Edits must be performed in Product Modelling.</span>
             </div>
             @if (approvedPages().length === 0) {
               <div class="shared-empty" role="status">
@@ -1036,7 +1040,7 @@ const QUEUE_STATUS_ORDER: QueueItemStatus[] = ['QUEUED', 'IN_PROGRESS', 'IN_QA',
     .gate-pill { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; }
     .gate-pill.soft { background: #FEF3C7; color: #D97706; }
 
-    .tab-nav { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin: 0 -24px; padding: 0 24px; }
+    .tab-nav { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin: 0 -24px; padding: 0 24px; overflow-x: auto; scrollbar-width: thin; }
     .tab-btn {
       display: flex; align-items: center; gap: 6px; padding: 8px 14px; border: none;
       background: transparent; font-family: var(--font-sans); font-size: 13px; font-weight: 500;
@@ -1438,7 +1442,7 @@ export class DevelopmentTab implements OnInit, OnDestroy {
     { id: 'plugins'     as TabId, label: 'Plugins',         badge: () => this.plugins().length > 0 ? this.plugins().length : null },
     { id: 'themes'      as TabId, label: 'Themes',          badge: () => this.themes().length > 0 ? this.themes().length : null },
     { id: 'maintenance' as TabId, label: 'Maintenance Mode', badge: () => null as number | null },
-    { id: 'gate'        as TabId, label: 'Soft Gate',       badge: () => null as number | null },
+    { id: 'gate'        as TabId, label: 'Review & Gate',   badge: () => null as number | null },
   ];
 
   protected approvedAssets = computed(() =>
@@ -2122,6 +2126,37 @@ export class DevelopmentTab implements OnInit, OnDestroy {
     return icons[type] ?? icons.OTHER;
   }
 
+  protected openAsset(asset: { name: string; url: string }, event: MouseEvent) {
+    if (asset.url.startsWith('data:')) {
+      event.preventDefault();
+      const newTab = window.open();
+      if (newTab) {
+        const safeName = asset.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        newTab.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>${safeName}</title>
+              <style>
+                body { margin: 0; background: #0B0F19; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #fff; }
+                img { max-width: 90%; max-height: 85vh; object-fit: contain; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border-radius: 12px; border: 1px solid #1E293B; }
+                .container { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px; }
+                .title { font-size: 14px; font-weight: 500; color: #94A3B8; letter-spacing: 0.02em; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="title">${safeName}</div>
+                <img src="${asset.url}" alt="${safeName}" />
+              </div>
+            </body>
+          </html>
+        `);
+        newTab.document.close();
+      }
+    }
+  }
+
   protected formatDate(iso?: string): string {
     if (!iso) return '—';
     return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -2190,6 +2225,7 @@ export class DevelopmentTab implements OnInit, OnDestroy {
       notes:      v.notes      ?? undefined,
     }).subscribe({
       next: () => {
+        this.projectService.getProject(this.projectId).subscribe(p => this.state.setProject(p));
         this.saving.set(false);
         this.saveSuccess.set(true);
         setTimeout(() => this.saveSuccess.set(false), 2000);

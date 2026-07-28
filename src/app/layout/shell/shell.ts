@@ -25,6 +25,11 @@ interface NavGroup {
   template: `
     <div class="shell">
 
+      <!-- Sidebar backdrop on mobile -->
+      @if (!sidebarCollapsed()) {
+        <div class="mobile-sidebar-backdrop" (click)="sidebarCollapsed.set(true)"></div>
+      }
+
       <!-- Sidebar -->
       <aside class="sidebar" [class.collapsed]="sidebarCollapsed()">
 
@@ -111,7 +116,17 @@ interface NavGroup {
 
         <!-- Topbar -->
         <header class="topbar" role="banner">
-          <div class="topbar-left">
+          <div class="topbar-left" style="display: flex; align-items: center; gap: 12px;">
+            <button
+              class="mobile-menu-btn"
+              (click)="toggleSidebar()"
+              aria-label="Toggle menu"
+              style="background: transparent; border: none; padding: 6px; cursor: pointer; color: var(--color-text-secondary); display: none; align-items: center; justify-content: center;"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
             <h1 class="page-title">{{ pageTitle() }}</h1>
           </div>
           <div class="topbar-right">
@@ -621,32 +636,81 @@ interface NavGroup {
       overflow-y: auto;
       padding: 28px 28px;
     }
+
+    .mobile-sidebar-backdrop {
+      display: none;
+    }
+
+    @media (max-width: 768px) {
+      .mobile-menu-btn {
+        display: flex !important;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: -260px;
+        height: 100vh;
+        z-index: 1000;
+        transition: left 0.3s ease, width 0.3s ease;
+        box-shadow: 4px 0 12px rgba(0,0,0,0.15);
+      }
+      .sidebar:not(.collapsed) {
+        left: 0;
+        width: 260px;
+        min-width: 260px;
+      }
+      .sidebar.collapsed {
+        left: -260px;
+        width: 260px;
+        min-width: 260px;
+      }
+      .mobile-sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: 999;
+      }
+      .main-area {
+        width: 100%;
+      }
+      .topbar {
+        padding: 0 16px;
+      }
+      .page-content {
+        padding: 16px;
+      }
+      .notif-panel {
+        width: calc(100vw - 32px);
+        right: -16px;
+      }
+    }
   `]
 })
 export class Shell implements OnInit, OnDestroy {
   protected themeService = inject(ThemeService);
   @ViewChild('pageContent') private pageContent!: ElementRef<HTMLElement>;
 
-  protected sidebarCollapsed = signal(false);
-
-  private savedScroll = 0;
-  private routerSub!: Subscription;
+  protected currentUrl = signal(typeof window !== 'undefined' ? window.location.pathname : '/app/projects');
 
   protected pageTitle = computed(() => {
-    const url = window.location.pathname;
-    if (url.includes('projects')) return 'Projects';
-    if (url.includes('profiling')) return 'Project Profiling';
-    if (url.includes('written-content')) return 'Written Content';
-    if (url.includes('design')) return 'Design';
-    if (url.includes('development')) return 'Development';
-    if (url.includes('analytics')) return 'Analytics Hub';
-    if (url.includes('social')) return 'Social Media';
-    if (url.includes('paid')) return 'Paid Marketing';
-    if (url.includes('seo')) return 'SEO';
-    if (url.includes('reporting')) return 'Reporting';
-    if (url.includes('maintenance')) return 'Maintenance';
+    const url = this.currentUrl();
+    if (url.includes('/maintenance')) return 'Maintenance';
+    if (url.includes('/settings')) return 'Settings';
+    if (url.includes('/content-marketing')) return 'Content Marketing';
+    if (url.includes('/written-content') || url.includes('/content')) return 'Written Content';
+    if (url.includes('/profiling')) return 'Project Profiling';
+    if (url.includes('/design')) return 'Design';
+    if (url.includes('/development')) return 'Development';
+    if (url.includes('/analytics')) return 'Analytics Hub';
+    if (url.includes('/social')) return 'Social Media';
+    if (url.includes('/paid')) return 'Paid Marketing';
+    if (url.includes('/seo')) return 'SEO';
+    if (url.includes('/reporting')) return 'Reporting';
+    if (url.includes('/projects')) return 'Projects';
     return 'Dashboard';
   });
+
 
   protected navGroups: NavGroup[] = [
     {
@@ -747,27 +811,38 @@ export class Shell implements OnInit, OnDestroy {
     }
   ];
 
+  protected sidebarCollapsed = signal(false);
+  private savedScroll = 0;
+  private routerSub!: Subscription;
   private router = inject(Router);
   private auth = inject(AuthService);
   protected notifService = inject(NotificationService);
   protected panelOpen = signal(false);
 
   ngOnInit() {
+    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+      this.sidebarCollapsed.set(true);
+    }
     this.routerSub = this.router.events.subscribe(event => {
       if (event instanceof NavigationStart) {
         this.savedScroll = this.pageContent?.nativeElement?.scrollTop ?? 0;
+        if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+          this.sidebarCollapsed.set(true);
+        }
       }
       if (event instanceof NavigationEnd) {
+        this.currentUrl.set(event.urlAfterRedirects);
         // Restore on same-page tab switches; reset only on top-level page changes
         const el = this.pageContent?.nativeElement;
         if (!el) return;
         const isTopLevel = ['projects', 'profiling', 'written-content', 'design', 'development',
-          'analytics', 'content-marketing', 'social', 'paid', 'seo', 'reporting', 'maintenance']
+          'analytics', 'content-marketing', 'social', 'paid', 'seo', 'reporting', 'maintenance', 'settings']
           .some(p => event.urlAfterRedirects === `/app/${p}`);
         el.scrollTop = isTopLevel ? 0 : this.savedScroll;
       }
     });
   }
+
 
   ngOnDestroy() {
     this.routerSub?.unsubscribe();
